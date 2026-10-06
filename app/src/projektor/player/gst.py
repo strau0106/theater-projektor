@@ -118,6 +118,10 @@ def _prepare_gl_env(kind: str) -> None:
         os.environ.setdefault("GST_GL_WINDOW", "gbm")
         os.environ.setdefault("GST_GL_PLATFORM", "egl")
         os.environ.setdefault("GST_GL_API", "gles2")
+        # Without this GstGL picks a 16-bit (RGB565) EGL config on the Pi 4: visible banding,
+        # artifacts and wrong colours on the beamer (kmssink / mpv looked correct).
+        os.environ.setdefault(
+            "GST_GL_CONFIG", "gst-gl-context-config,red-size=8,green-size=8,blue-size=8,alpha-size=8")
 
 
 class _Display:
