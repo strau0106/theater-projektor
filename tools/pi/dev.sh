@@ -15,5 +15,7 @@ case "$cmd" in
   deploy)   tar -C "$ROOT/app/src" -czf - --exclude=__pycache__ projektor | $SSH 'cat > /tmp/projektor-src.tgz' &&
             exec $SSH 'sudo -n /usr/local/sbin/projektor-dev deploy' ;;
   snapshot) $SSH 'sudo -n /usr/local/sbin/projektor-dev snapshot' | base64 -d > "${1:-snapshot.png}" && echo "${1:-snapshot.png}" ;;
-  *)        exec $SSH sudo -n /usr/local/sbin/projektor-dev "$cmd" "$@" ;;
+  *)        # ssh joins argv and the remote shell re-parses it: quote every argument
+            args=""; for a in "$cmd" "$@"; do args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"; done
+            exec $SSH "sudo -n /usr/local/sbin/projektor-dev$args" ;;
 esac

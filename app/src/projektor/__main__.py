@@ -119,7 +119,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         controller.set_transport_status("osc", f"error: {e.strerror or e}")
 
     lora = _start_lora(settings, dispatcher, controller)
-    web_server, web_thread = _start_web(settings, controller, dispatcher, show_store)
+    web_server, web_thread = _start_web(settings, controller, dispatcher, show_store, beamer)
 
     def beamer_boot() -> None:
         beamer.setup()
