@@ -260,6 +260,15 @@ class Controller:
  "transports": {"osc": "listening :9000", "lora": "connected /dev/ttyACM0|absent|disabled"}}
 ```
 
+Implemented additions (additive, not part of the transport contract): `state()["error"]` (last playback
+error), `record_command(address, args, source)` (used by web transport endpoints),
+`set_transport_status(name, text)`, `tick()`, `Player.snapshot_png()` (SIGUSR1 → `<data_dir>/snapshot.png`),
+setting `display.fps` (default 30). Settings accept unknown TOML sections/keys (e.g. `[wifi]` used by
+`projektor-wifi`).
+
+Behaviour notes: `go` while *manually* paused runs the standby cue (only a pause-point pause resumes);
+`end = "black"` cuts (no auto fade); switching clips cuts the old clip before starting the new one.
+
 `ShowStore` (in `config.py`): `load() -> Show`, `save(show: Show)` (atomic write, validation),
 `media_dir: Path`. Web writes show.json via `ShowStore` then calls `controller.reload_show()`.
 
