@@ -394,6 +394,39 @@ def test_wifi_via_stub(env):
     assert r.status_code == 502 and "unknown network" in r.json()["detail"]
 
 
+def test_wifi_enterprise_and_open_via_stub(env):
+    c = env.client
+    r = c.post("/api/wifi", json={"ssid": "Uni", "security": "eap", "identity": "rufus@uni.de",
+                                   "password": "x", "method": "peap", "phase2": "mschapv2", "priority": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["security"] == "eap"
+    r = c.post("/api/wifi", json={"ssid": "Cafe", "security": "open"})
+    assert r.status_code == 200 and r.json()["security"] == "open"
+    nets = {n["ssid"]: n for n in c.get("/api/wifi").json()["networks"]}
+    assert nets["Uni"]["security"] == "eap" and nets["Uni"]["identity"] == "rufus@uni.de"
+    assert nets["Cafe"]["security"] == "open"
+    assert c.post("/api/wifi", json={"ssid": "Uni", "security": "eap", "password": "x"}).status_code == 400
+    assert c.post("/api/wifi", json={"ssid": "Uni", "security": "wep"}).status_code == 400
+
+
+def test_wifi_password_not_in_argv(tmp_path):
+    """Passwords go to the WiFi CLI on stdin, never on the command line."""
+    from projektor.web.system import WifiCli
+
+    log = tmp_path / "argv.json"
+    script = tmp_path / "cli.py"
+    script.write_text(
+        "import json, sys\n"
+        f"open({str(log)!r}, 'w').write(json.dumps({{'argv': sys.argv[1:], 'stdin': sys.stdin.read()}}))\n"
+        "print(json.dumps({'ok': True}))\n")
+    WifiCli([sys.executable, str(script)]).add("Net", "geheim123", 2, {"identity": "u", "password": "pw-secret"})
+    rec = json.loads(log.read_text())
+    assert rec["argv"] == ["add-json"]
+    assert "geheim123" not in " ".join(rec["argv"])
+    req = json.loads(rec["stdin"])
+    assert req == {"ssid": "Net", "psk": "geheim123", "priority": 2, "eap": {"identity": "u", "password": "pw-secret"}}
+
+
 def test_wifi_missing_cli(tmp_path):
     e = Env(tmp_path)
     app = create_app(e.settings, e.ctrl, e.disp, e.store, wifi_cmd=["/nonexistent/projektor-wifi"])

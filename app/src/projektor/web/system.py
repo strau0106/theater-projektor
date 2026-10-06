@@ -86,11 +86,12 @@ class WifiCli:
         self.cmd = _split(cmd)
         self.timeout_s = timeout_s
 
-    def run(self, *args: str, timeout_s: float | None = None) -> object:
+    def run(self, *args: str, timeout_s: float | None = None, stdin: str | None = None) -> object:
         argv = self.cmd + [str(a) for a in args]
         try:
             p = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout_s or self.timeout_s, stdin=subprocess.DEVNULL
+                argv, capture_output=True, text=True, timeout=timeout_s or self.timeout_s,
+                input=stdin, stdin=subprocess.DEVNULL if stdin is None else None,
             )
         except FileNotFoundError as e:
             raise CommandError(f"WiFi manager not available: {e}", 503) from e
@@ -126,11 +127,12 @@ class WifiCli:
     def scan(self):
         return self.run("scan", timeout_s=max(self.timeout_s, 60))
 
-    def add(self, ssid: str, psk: str, priority: int | None = None):
-        args = ["add", ssid, psk]
-        if priority is not None:
-            args.append(str(int(priority)))
-        return self.run(*args)
+    def add(self, ssid: str, psk: str, priority: int | None = None, eap: dict | None = None):
+        # JSON on stdin keeps passwords out of the process list
+        req: dict = {"ssid": ssid, "psk": psk, "priority": int(priority or 0)}
+        if eap is not None:
+            req["eap"] = eap
+        return self.run("add-json", stdin=json.dumps(req))
 
     def remove(self, ssid: str):
         return self.run("remove", ssid)

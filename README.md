@@ -108,11 +108,17 @@ Put the card into any PC; on the FAT partition **bootfs** edit `projektor-wifi.t
 # ssid;password;priority   (higher priority is tried first, empty password = open network)
 Theater-Buehne;secret-password;10
 Phone-Hotspot;other-password;5
+# WPA2-Enterprise: eap;ssid;identity;password;priority[;method=peap|ttls|pwd;phase2=mschapv2|pap;anon=..;domain=..;ca=file.pem]
+eap;eduroam;first.last@uni.de;secret;3;anon=anonymous@uni.de
 ```
+
+Enterprise networks default to PEAP/MSCHAPv2 without server certificate check; add
+`domain=` and/or `ca=<pem file on bootfs>` to verify the RADIUS server. The same options
+are available in the web UI (Security: WPA2 Enterprise).
 
 At the next boot the networks are imported and the file is renamed to
 `projektor-wifi.txt.imported`. Networks can also be managed in the web UI (WiFi page),
-or via SSH: `sudo projektor-wifi list|add <ssid> <psk> [prio]|remove <ssid>|scan|retry`.
+or via SSH: `sudo projektor-wifi list|add <ssid> <psk> [prio]|add-json|remove <ssid>|scan|retry`.
 
 Without a reachable known network the projector opens the hotspot `projektor-XXXX`
 (last 4 hex digits of the WiFi MAC, password = `HOTSPOT_PASSWORD`) after 8 failed attempts

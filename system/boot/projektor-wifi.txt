@@ -11,6 +11,17 @@
 # should not stay on the card). To add more
 # networks later, create projektor-wifi.txt again or use the web UI.
 #
+# WPA2-Enterprise (802.1X, e.g. eduroam / company WiFi):
+#   eap;ssid;identity;password;priority;option=value;...
+#   options (all optional): method=peap|ttls|pwd (default peap)
+#                           phase2=mschapv2|pap|gtc|... (default mschapv2)
+#                           anon=<anonymous outer identity>
+#                           domain=<RADIUS server certificate domain, e.g. radius.uni.de>
+#                           ca=<CA certificate .pem file copied next to this file>
+#   without ca= the server certificate is NOT checked.
+#   enterprise passwords must not contain ";" (use the web UI for those).
+#
 # Examples:
 # Theater-Buehne;geheimesPasswort;10
 # Handy-Hotspot;nochEinPasswort;5
+# eap;eduroam;vorname.nachname@uni.de;geheim;3;anon=anonymous@uni.de;domain=radius.uni.de

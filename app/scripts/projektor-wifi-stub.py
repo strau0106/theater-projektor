@@ -4,11 +4,14 @@
 Same CLI and JSON output shape, but backed by a JSON state file instead of
 NetworkManager:
 
-    projektor-wifi-stub.py [--state FILE] list|add <ssid> <psk> [prio]|remove <ssid>|scan|retry
+    projektor-wifi-stub.py [--state FILE] list|add <ssid> <psk> [prio]|add-json|remove <ssid>|scan|retry
+
+`add-json` reads {"ssid", "psk", "priority", "eap": {...}} from stdin.
 
 Output (stdout, one JSON document):
-    list   {"ok": true, "networks": [{"ssid": "...", "priority": 10, "active": false}]}
-    add    {"ok": true, "ssid": "...", "priority": 0}
+    list   {"ok": true, "networks": [{"ssid": "...", "priority": 10, "active": false,
+                                       "security": "psk|eap|open", "identity": ""}]}
+    add    {"ok": true, "ssid": "...", "priority": 0, "security": "psk"}
     remove {"ok": true, "ssid": "..."}
     scan   {"ok": true, "networks": [{"ssid": "...", "signal": 70, "security": "WPA2", "known": true}]}
     retry  {"ok": true}
@@ -54,7 +57,7 @@ def out(obj: dict, code: int = 0) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default=os.environ.get("PROJEKTOR_WIFI_STUB_STATE", "devdata/wifi-stub.json"))
-    ap.add_argument("cmd", choices=["list", "add", "remove", "scan", "retry"])
+    ap.add_argument("cmd", choices=["list", "add", "add-json", "remove", "scan", "retry"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args(argv)
     path = Path(a.state)
@@ -63,7 +66,8 @@ def main(argv=None) -> int:
 
     if a.cmd == "list":
         return out({"ok": True, "networks": [
-            {"ssid": n["ssid"], "priority": n.get("priority", 0), "active": n["ssid"] == st.get("active")}
+            {"ssid": n["ssid"], "priority": n.get("priority", 0), "active": n["ssid"] == st.get("active"),
+             "security": n.get("security", "psk"), "identity": n.get("identity", "")}
             for n in sorted(nets, key=lambda n: -n.get("priority", 0))
         ]})
     if a.cmd == "add":
@@ -79,6 +83,27 @@ def main(argv=None) -> int:
         nets[:] = [n for n in nets if n["ssid"] != ssid] + [{"ssid": ssid, "priority": prio}]
         save(path, st)
         return out({"ok": True, "ssid": ssid, "priority": prio})
+    if a.cmd == "add-json":
+        try:
+            req = json.loads(sys.stdin.read() or "{}")
+            prio = int(req.get("priority") or 0)
+        except (ValueError, TypeError, AttributeError) as e:
+            return out({"ok": False, "error": f"bad request: {e}"}, 1)
+        ssid, psk, eap = str(req.get("ssid") or ""), str(req.get("psk") or ""), req.get("eap")
+        if not ssid:
+            return out({"ok": False, "error": "SSID must be 1..32 bytes"}, 1)
+        if eap is not None:
+            if not eap.get("identity") or not eap.get("password"):
+                return out({"ok": False, "error": "enterprise network needs identity and password"}, 1)
+            security, identity = "eap", eap["identity"]
+        else:
+            if psk and not 8 <= len(psk) <= 63:
+                return out({"ok": False, "error": "WPA password must be 8..63 characters"}, 1)
+            security, identity = ("psk" if psk else "open"), ""
+        nets[:] = [n for n in nets if n["ssid"] != ssid] + [
+            {"ssid": ssid, "priority": prio, "security": security, "identity": identity}]
+        save(path, st)
+        return out({"ok": True, "ssid": ssid, "priority": prio, "security": security})
     if a.cmd == "remove":
         if not a.args:
             return out({"ok": False, "error": "usage: remove <ssid>"}, 1)

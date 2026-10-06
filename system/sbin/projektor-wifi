@@ -7,6 +7,7 @@ Runs as root. Uses NetworkManager through `nmcli`. Python stdlib only.
     projektor-wifi import                    import /boot/firmware/projektor-wifi.txt now
     projektor-wifi list                      known networks              (JSON)
     projektor-wifi add <ssid> <psk> [prio]   add / replace a network     (JSON, psk "" = open)
+    projektor-wifi add-json                  add / replace from JSON on stdin, incl. WPA-Enterprise
     projektor-wifi remove <ssid>             forget a network            (JSON)
     projektor-wifi scan                      visible networks            (JSON)
     projektor-wifi retry                     daemon: leave hotspot, retry now (JSON)
@@ -168,7 +169,8 @@ def known_networks() -> list[dict]:
         if name == HOTSPOT_CON:
             continue
         try:
-            p = con_props(uuid, ["802-11-wireless.ssid", "802-11-wireless.mode", "connection.autoconnect-priority"])
+            p = con_props(uuid, ["802-11-wireless.ssid", "802-11-wireless.mode", "connection.autoconnect-priority",
+                                 "802-11-wireless-security.key-mgmt", "802-1x.identity"])
         except WifiError:
             continue
         if p.get("802-11-wireless.mode") == "ap":
@@ -177,7 +179,10 @@ def known_networks() -> list[dict]:
             prio = int(p.get("connection.autoconnect-priority") or 0)
         except ValueError:
             prio = 0
-        nets.append({"ssid": p.get("802-11-wireless.ssid", ""), "priority": prio, "name": name, "uuid": uuid})
+        km = p.get("802-11-wireless-security.key-mgmt", "")
+        security = "eap" if km == "wpa-eap" else ("psk" if km.startswith(("wpa-psk", "sae")) else "open")
+        nets.append({"ssid": p.get("802-11-wireless.ssid", ""), "priority": prio, "name": name, "uuid": uuid,
+                     "security": security, "identity": p.get("802-1x.identity", "") if security == "eap" else ""})
     nets.sort(key=lambda n: (-n["priority"], n["ssid"]))
     return nets
 
@@ -257,10 +262,44 @@ def validate_psk(psk: str) -> None:
         raise WifiError("WPA password must be 8..63 characters (or empty for an open network)")
 
 
-def add_network(cfg: Config, ssid: str, psk: str, prio: int = 0) -> dict:
+EAP_METHODS = ("peap", "ttls", "pwd")
+PHASE2_METHODS = ("mschapv2", "mschap", "pap", "chap", "gtc", "md5")
+CA_DIR = os.environ.get("PROJEKTOR_WIFI_CA_DIR", "/etc/projektor/wifi-ca")
+
+
+def _ca_path(ssid: str) -> str:
+    return os.path.join(CA_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", ssid) + ".pem")
+
+
+def normalize_eap(eap: dict) -> dict:
+    """Validate WPA-Enterprise settings. Keys: identity, password, method (peap|ttls|pwd),
+    phase2 (mschapv2|...), anonymous_identity, domain_suffix, ca_cert (PEM text)."""
+    e = {k: ("" if v is None else str(v)) for k, v in eap.items()}
+    method = (e.get("method") or "peap").lower()
+    if method not in EAP_METHODS:
+        raise WifiError(f"EAP method must be one of {', '.join(EAP_METHODS)}")
+    phase2 = (e.get("phase2") or ("" if method == "pwd" else "mschapv2")).lower()
+    if method != "pwd" and phase2 not in PHASE2_METHODS:
+        raise WifiError(f"phase2 must be one of {', '.join(PHASE2_METHODS)}")
+    if not e.get("identity"):
+        raise WifiError("enterprise network needs an identity (user name)")
+    if not e.get("password"):
+        raise WifiError("enterprise network needs a password")
+    ca = e.get("ca_cert", "").strip()
+    if ca and "-----BEGIN CERTIFICATE-----" not in ca:
+        raise WifiError("ca_cert must be a PEM certificate")
+    return {"method": method, "phase2": phase2, "identity": e["identity"], "password": e["password"],
+            "anonymous_identity": e.get("anonymous_identity", ""),
+            "domain_suffix": e.get("domain_suffix", ""), "ca_cert": ca}
+
+
+def add_network(cfg: Config, ssid: str, psk: str, prio: int = 0, eap: dict | None = None) -> dict:
     if not ssid or len(ssid.encode()) > 32:
         raise WifiError("SSID must be 1..32 bytes")
-    validate_psk(psk)
+    if eap is not None:
+        eap = normalize_eap(eap)
+    else:
+        validate_psk(psk)
     for n in known_networks():
         if n["ssid"] == ssid:
             nmcli("connection", "delete", "uuid", n["uuid"])
@@ -268,10 +307,30 @@ def add_network(cfg: Config, ssid: str, psk: str, prio: int = 0) -> dict:
             "ifname", cfg["interface"], "ssid", ssid,
             "connection.autoconnect", "yes", "connection.autoconnect-priority", str(int(prio)),
             "802-11-wireless.mode", "infrastructure"]
-    if psk:
+    if eap is not None:
+        # Secrets are stored in the profile (root-only keyfile), no agent needed at boot.
+        args += ["wifi-sec.key-mgmt", "wpa-eap", "802-1x.eap", eap["method"],
+                 "802-1x.identity", eap["identity"], "802-1x.password", eap["password"],
+                 "802-1x.password-flags", "0"]
+        if eap["phase2"] and eap["method"] != "pwd":
+            args += ["802-1x.phase2-auth", eap["phase2"]]
+        if eap["anonymous_identity"]:
+            args += ["802-1x.anonymous-identity", eap["anonymous_identity"]]
+        if eap["domain_suffix"]:
+            args += ["802-1x.domain-suffix-match", eap["domain_suffix"]]
+        if eap["ca_cert"]:
+            os.makedirs(CA_DIR, mode=0o755, exist_ok=True)
+            path = _ca_path(ssid)
+            with open(path, "w") as f:
+                f.write(eap["ca_cert"].rstrip() + "\n")
+            os.chmod(path, 0o644)
+            args += ["802-1x.ca-cert", path]
+        # No CA given: server certificate is not validated (works with any RADIUS server).
+    elif psk:
         args += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk]
     nmcli(*args)
-    return {"ok": True, "ssid": ssid, "priority": int(prio)}
+    return {"ok": True, "ssid": ssid, "priority": int(prio),
+            "security": "eap" if eap is not None else ("psk" if psk else "open")}
 
 
 def remove_network(ssid: str) -> dict:
@@ -286,19 +345,49 @@ def remove_network(ssid: str) -> dict:
 # ---------------------------------------------------------------- boot file import
 
 
+EAP_KEYS = {"method": "method", "eap": "method", "phase2": "phase2", "anon": "anonymous_identity",
+            "anonymous_identity": "anonymous_identity", "domain": "domain_suffix",
+            "domain_suffix": "domain_suffix", "ca": "ca_file"}
+
+
 def parse_wifi_line(line: str):
-    """`ssid;psk;priority` (psk may be empty, priority optional). Returns (ssid, psk, prio) or None."""
-    line = line.strip().lstrip("﻿")
+    """Returns (ssid, psk, prio, eap_or_None) or None.
+
+    WPA-PSK / open:  `ssid;psk;priority` (psk may be empty, priority optional)
+    WPA-Enterprise:  `eap;ssid;identity;password;priority[;key=value...]`
+                     keys: method=peap|ttls|pwd  phase2=mschapv2|pap|...  anon=<outer identity>
+                           domain=<server cert domain suffix>  ca=<PEM file on the boot partition>
+    """
+    line = line.strip().lstrip("\ufeff")
     if not line or line.startswith("#"):
         return None
     parts = line.split(";")
+    if parts[0].strip().lower() == "eap":
+        if len(parts) < 4:
+            raise WifiError("enterprise line needs: eap;ssid;identity;password[;priority][;key=value...]")
+        ssid, identity, password = parts[1].strip(), parts[2].strip(), parts[3]
+        eap = {"identity": identity, "password": password}
+        prio = 0
+        for extra in parts[4:]:
+            extra = extra.strip()
+            if not extra:
+                continue
+            if re.fullmatch(r"-?\d+", extra):
+                prio = int(extra)
+                continue
+            key, _, val = extra.partition("=")
+            key = EAP_KEYS.get(key.strip().lower())
+            if not key:
+                raise WifiError(f"unknown enterprise option: {extra}")
+            eap[key] = val.strip()
+        return (ssid, "", prio, eap) if ssid else None
     prio = 0
     if len(parts) >= 3 and re.fullmatch(r"\s*(-?\d+)?\s*", parts[-1]):
         prio = int(parts[-1]) if parts[-1].strip() else 0
         parts = parts[:-1]
     ssid = parts[0].strip()
     psk = ";".join(parts[1:])
-    return (ssid, psk, prio) if ssid else None
+    return (ssid, psk, prio, None) if ssid else None
 
 
 def import_boot_file(cfg: Config) -> int:
@@ -310,17 +399,29 @@ def import_boot_file(cfg: Config) -> int:
     except OSError as e:
         log(f"import: cannot read {BOOT_FILE}: {e}")
         return 0
-    entries = [e for e in (parse_wifi_line(l) for l in lines) if e]
+    entries = []
+    for l in lines:
+        try:
+            e = parse_wifi_line(l)
+        except WifiError as err:
+            log(f"import: skipping line: {err}")
+            continue
+        if e:
+            entries.append(e)
     if not entries:
         log(f"import: {BOOT_FILE} has no entries, leaving it in place")
         return 0
     count = 0
-    for ssid, psk, prio in entries:
+    for ssid, psk, prio, eap in entries:
         try:
-            add_network(cfg, ssid, psk, prio)
+            if eap and eap.get("ca_file"):
+                ca_file = os.path.join(os.path.dirname(BOOT_FILE), os.path.basename(eap.pop("ca_file")))
+                with open(ca_file, encoding="utf-8") as f:
+                    eap["ca_cert"] = f.read()
+            add_network(cfg, ssid, psk, prio, eap)
             count += 1
             log(f"import: added network '{ssid}' (priority {prio})")
-        except WifiError as e:
+        except (WifiError, OSError) as e:
             log(f"import: skipping '{ssid}': {e}")
     try:
         os.replace(BOOT_FILE, BOOT_FILE + ".imported")
@@ -626,7 +727,8 @@ def main(argv: list[str]) -> int:
             dev = wifi_device(cfg)
             active = dev["connection"] if dev and dev["state"] == "connected" else None
             return out({"ok": True, "networks": [
-                {"ssid": n["ssid"], "priority": n["priority"], "active": n["name"] == active}
+                {"ssid": n["ssid"], "priority": n["priority"], "active": n["name"] == active,
+                 "security": n["security"], "identity": n["identity"]}
                 for n in known_networks()]})
         if cmd == "add":
             if len(args) < 2 or len(args) > 3:
@@ -636,6 +738,23 @@ def main(argv: list[str]) -> int:
             except ValueError:
                 return out({"ok": False, "error": "priority must be an integer"}, 1)
             res = add_network(cfg, args[0], args[1], prio)
+            _trigger_if_not_connected(cfg)
+            return out(res)
+        if cmd == "add-json":
+            # JSON object on stdin keeps passwords out of the process list:
+            # {"ssid", "psk", "priority", "eap": {identity, password, method, phase2,
+            #  anonymous_identity, domain_suffix, ca_cert}}
+            try:
+                req = json.loads(sys.stdin.read() or "{}")
+                if not isinstance(req, dict):
+                    raise ValueError("expected a JSON object")
+                prio = int(req.get("priority") or 0)
+            except (ValueError, TypeError) as e:
+                return out({"ok": False, "error": f"bad request: {e}"}, 1)
+            eap = req.get("eap")
+            if eap is not None and not isinstance(eap, dict):
+                return out({"ok": False, "error": "eap must be an object"}, 1)
+            res = add_network(cfg, str(req.get("ssid") or ""), str(req.get("psk") or ""), prio, eap)
             _trigger_if_not_connected(cfg)
             return out(res)
         if cmd == "remove":

@@ -136,7 +136,23 @@
     <h3>Add network</h3>
     <form id="wifiForm" class="grid2">
       <label class="f">SSID<input id="wifiSsid" autocapitalize="off" autocomplete="off" required></label>
-      <label class="f">Password<input id="wifiPsk" type="password" autocomplete="new-password" placeholder="empty = open network"></label>
+      <label class="f">Security<select id="wifiSec">
+        <option value="psk">WPA2/WPA3 Personal</option>
+        <option value="eap">WPA2 Enterprise (802.1X)</option>
+        <option value="open">Open</option>
+      </select></label>
+      <label class="f eap-only hidden">Identity (user)<input id="wifiId" autocapitalize="off" autocomplete="off"></label>
+      <label class="f sec-pw">Password<input id="wifiPsk" type="password" autocomplete="new-password"></label>
+      <label class="f eap-only hidden">EAP method<select id="wifiEap">
+        <option value="peap">PEAP</option><option value="ttls">TTLS</option><option value="pwd">PWD</option>
+      </select></label>
+      <label class="f eap-only hidden">Phase 2<select id="wifiPhase2">
+        <option value="mschapv2">MSCHAPv2</option><option value="pap">PAP</option><option value="gtc">GTC</option>
+        <option value="mschap">MSCHAP</option><option value="chap">CHAP</option><option value="md5">MD5</option>
+      </select></label>
+      <label class="f eap-only hidden">Anonymous identity<input id="wifiAnon" autocapitalize="off" autocomplete="off" placeholder="optional"></label>
+      <label class="f eap-only hidden">Server domain<input id="wifiDomain" autocapitalize="off" autocomplete="off" placeholder="optional, e.g. radius.example.org"></label>
+      <label class="f eap-only hidden" style="grid-column:1/-1">CA certificate (PEM)<textarea id="wifiCa" rows="3" placeholder="optional - empty = server certificate not checked"></textarea></label>
       <label class="f">Priority<input id="wifiPrio" type="number" value="10"></label>
       <div class="row" style="align-items:end"><button class="primary grow" type="submit">Add</button></div>
     </form>

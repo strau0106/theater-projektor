@@ -690,18 +690,35 @@ async function loadWifi() {
     const prio = n.priority ?? n.prio;
     box.append(h("div", { class: "item row" },
       h("div", { class: "grow" }, h("span", { class: "title" }, ssid), n.active ? h("span", { class: "tag cur" }, "connected") : null,
-        prio !== undefined ? h("span", { class: "muted small" }, `  priority ${prio}`) : null),
+        prio !== undefined ? h("span", { class: "muted small" }, `  priority ${prio}`) : null,
+        n.security === "eap" ? h("span", { class: "muted small" }, `  · enterprise${n.identity ? " (" + n.identity + ")" : ""}`) : null,
+        n.security === "open" ? h("span", { class: "muted small" }, "  · open") : null),
       h("button", { class: "small danger", onclick: () => {
         if (confirm(`Forget network "${ssid}"?`)) act(async () => { await api("DELETE", "/api/wifi/" + encodeURIComponent(ssid)); await loadWifi(); }, "removed");
       } }, "Remove")));
   }
 }
 
+function wifiSecChanged() {
+  const sec = $("wifiSec").value;
+  document.querySelectorAll("#wifiForm .eap-only").forEach((el) => el.classList.toggle("hidden", sec !== "eap"));
+  document.querySelector("#wifiForm .sec-pw").classList.toggle("hidden", sec === "open");
+}
+$("wifiSec").addEventListener("change", wifiSecChanged);
+wifiSecChanged();
+
 $("wifiForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const body = { ssid: $("wifiSsid").value.trim(), psk: $("wifiPsk").value, priority: $("wifiPrio").value };
+  const security = $("wifiSec").value;
+  const body = { ssid: $("wifiSsid").value.trim(), security, priority: $("wifiPrio").value };
+  if (security === "psk") body.psk = $("wifiPsk").value;
+  if (security === "eap") Object.assign(body, {
+    identity: $("wifiId").value.trim(), password: $("wifiPsk").value, method: $("wifiEap").value,
+    phase2: $("wifiPhase2").value, anonymous_identity: $("wifiAnon").value.trim(),
+    domain_suffix: $("wifiDomain").value.trim(), ca_cert: $("wifiCa").value.trim(),
+  });
   const r = await act(() => api("POST", "/api/wifi", body), "network added");
-  if (r) { $("wifiSsid").value = ""; $("wifiPsk").value = ""; loadWifi(); }
+  if (r) { for (const id of ["wifiSsid", "wifiPsk", "wifiId", "wifiAnon", "wifiDomain", "wifiCa"]) $(id).value = ""; loadWifi(); }
 });
 
 $("wifiScan").addEventListener("click", async () => {
@@ -715,7 +732,7 @@ $("wifiScan").addEventListener("click", async () => {
       box.append(h("div", { class: "item row" },
         h("div", { class: "grow" }, h("span", { class: "title" }, n.ssid || "(hidden)"),
           h("span", { class: "muted small" }, `  ${n.signal ?? "?"}%  ${n.security || "open"}`), n.known ? h("span", { class: "tag" }, "known") : null),
-        n.ssid ? h("button", { class: "small", onclick: () => { $("wifiSsid").value = n.ssid; $("wifiPsk").focus(); } }, "Use") : null));
+        n.ssid ? h("button", { class: "small", onclick: () => { $("wifiSsid").value = n.ssid; if (/802\.1X|EAP/i.test(n.security || "")) { $("wifiSec").value = "eap"; wifiSecChanged(); } $("wifiPsk").focus(); } }, "Use") : null));
     }
   } catch (e) { $("wifiMsg").textContent = e.message; }
 });

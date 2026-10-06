@@ -662,17 +662,30 @@ def create_app(
     @api.post("/wifi")
     def wifi_add(body: dict = Body(...)):
         ssid = str(body.get("ssid") or "").strip()
+        security = str(body.get("security") or "psk").lower()
         psk = str(body.get("psk") or "")
         if not ssid:
             raise HTTPException(400, "ssid required")
-        if psk and not 8 <= len(psk) <= 63:
-            raise HTTPException(400, "WPA password must be 8..63 characters")
         prio = body.get("priority")
         try:
             prio = int(prio) if prio not in (None, "") else None
         except (TypeError, ValueError):
             raise HTTPException(400, "priority must be an integer") from None
-        return wifi.add(ssid, psk, prio)
+        eap = None
+        if security == "eap":
+            eap = {k: str(body.get(k) or "") for k in (
+                "identity", "password", "method", "phase2", "anonymous_identity", "domain_suffix", "ca_cert")}
+            if not eap["identity"] or not eap["password"]:
+                raise HTTPException(400, "enterprise network needs identity and password")
+            psk = ""
+        elif security == "open":
+            psk = ""
+        elif security == "psk":
+            if not 8 <= len(psk) <= 63:
+                raise HTTPException(400, "WPA password must be 8..63 characters")
+        else:
+            raise HTTPException(400, "security must be psk, eap or open")
+        return wifi.add(ssid, psk, prio, eap)
 
     @api.delete("/wifi/{ssid}")
     def wifi_remove(ssid: str):

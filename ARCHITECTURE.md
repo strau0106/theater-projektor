@@ -296,14 +296,18 @@ giving two parallel paths; Pi dedups (§5).
 
 WiFi manager (`projektor-wifi`, bash or python, root):
 - Known networks = NetworkManager connection profiles with `autoconnect-priority`.
-- At boot import `/boot/firmware/projektor-wifi.txt` (`ssid;psk;priority` per line), then rename to
+- At boot import `/boot/firmware/projektor-wifi.txt` (`ssid;psk;priority` per line, WPA-Enterprise as
+  `eap;ssid;identity;password;priority;method=peap;phase2=mschapv2;anon=..;domain=..;ca=file.pem`), then rename to
   `.imported` (avoid re-import, keep for reference).
 - Loop: if not connected, try known networks by priority, one attempt every **15 s**; write net.json each step.
 - After `hotspot_after_attempts` (default 8 ≈ 2 min) failures: start hotspot `projektor-XXXX`
   (WPA2, password from settings, IP 10.42.0.1); web UI reachable there. Every `hotspot_rescan_s`
   (default 300) drop hotspot briefly, rescan, reconnect if a known network is visible.
-- CLI for web (via sudoers, user projektor): `projektor-wifi list|add <ssid> <psk> [prio]|remove <ssid>|scan|retry`
-  — JSON output.
+- CLI for web (via sudoers, user projektor): `projektor-wifi list|add <ssid> <psk> [prio]|add-json|remove <ssid>|scan|retry`
+  — JSON output. `add-json` reads `{"ssid","psk","priority","eap":{identity,password,method,phase2,
+  anonymous_identity,domain_suffix,ca_cert}}` from stdin (web uses it: no passwords in argv).
+  Enterprise: PEAP/TTLS/PWD, CA certificate optional (default: server cert not validated), CA PEMs stored in
+  `/etc/projektor/wifi-ca/`.
 
 Reverse tunnel (`projektor-tunnel`): `autossh -M 0 -N -o ServerAliveInterval=15 -o ServerAliveCountMax=3
 -o ExitOnForwardFailure=yes -R 127.0.0.1:2222:localhost:22 -R 127.0.0.1:8080:localhost:80
