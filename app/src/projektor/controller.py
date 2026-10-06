@@ -116,7 +116,7 @@ class Controller:
         p = self.player
         if discard:
             p.discard_prepared()
-        if not self.settings.player.preload:
+        if not self.settings.player.preload_enabled():
             return
         with self._lock:
             si = self._standby_index

@@ -77,7 +77,28 @@ class DisplaySettings(_Section):
 class PlayerSettings(_Section):
     # Preroll the standby cue in a second clip pipeline so GO starts within ~1 frame.
     # Costs a second decoder instance + its frame buffers (CMA on the Pi) while playing.
-    preload: bool = True
+    # "auto": only with >= 1.5 GB RAM (Pi 4 1 GB measured CmaFree ~1 MB with preload on).
+    preload: bool | Literal["auto"] = "auto"
+
+    def preload_enabled(self) -> bool:
+        if self.preload != "auto":
+            return bool(self.preload)
+        return _mem_total_kb() >= PRELOAD_AUTO_MIN_KB
+
+
+PRELOAD_AUTO_MIN_KB = 1_500_000
+
+
+def _mem_total_kb() -> int:
+    """MemTotal from /proc/meminfo; large value if unknown (non-Linux dev machines)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 1 << 40
 
 
 class OscSettings(_Section):

@@ -240,3 +240,16 @@ def test_resolve_video(tmp_path):
     assert v.fade_in == 3.0 and v.end == "hold" and v.cue_id is None
     with pytest.raises(ProjektorError):
         resolve_video(show, "nope", tmp_path)
+
+
+def test_preload_auto_depends_on_ram(monkeypatch):
+    from projektor import config as cfg
+
+    ps = cfg.PlayerSettings()
+    assert ps.preload == "auto"
+    monkeypatch.setattr(cfg, "_mem_total_kb", lambda: 900_000)  # Pi 4 1 GB
+    assert ps.preload_enabled() is False
+    monkeypatch.setattr(cfg, "_mem_total_kb", lambda: 1_900_000)  # Pi 4 2 GB
+    assert ps.preload_enabled() is True
+    assert cfg.PlayerSettings(preload=False).preload_enabled() is False
+    assert cfg.PlayerSettings(preload=True).preload_enabled() is True
