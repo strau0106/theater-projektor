@@ -33,6 +33,7 @@ def mk(tmp_path, **kw):
     script, log = fake_cec(tmp_path, **kw)
     b = Beamer(SimpleNamespace(beamer=SimpleNamespace(cec_ctl=str(script))))
     b.retry_gap_s = 0
+    b.wait_on_s = 0
     return b, log
 
 
@@ -42,6 +43,8 @@ def lines(log):
 
 def test_commands(tmp_path):
     b, log = mk(tmp_path)
+    b.ensure_registered = lambda: None
+    b.wait_on_s = 0
     b.setup()
     b.power_on()
     b.standby()
@@ -139,3 +142,29 @@ def test_status_off_after_standby_without_reply(tmp_path):
     assert b.status() == "unknown"
     b.standby()
     assert b.status() == "off"
+
+
+def test_reregisters_when_adapter_lost_address(tmp_path):
+    """Beamer asleep -> Pi adapter at f.f.f.f; power_on must re-register before Image View On."""
+    from types import SimpleNamespace
+    from projektor.beamer import Beamer
+
+    log = tmp_path / "log"
+    tool = tmp_path / "cec-ctl"
+    tool.write_text(f"""#!/bin/sh
+echo "$*" >> {log}
+if [ "$*" = "-d /dev/null" ]; then echo "	Physical Address           : f.f.f.f"; echo "	Logical Address Mask       : 0x0000"; fi
+exit 0
+""")
+    tool.chmod(0o755)
+    b = Beamer(SimpleNamespace(beamer=SimpleNamespace(enabled=True, device="/dev/null", phys_addr="1.0.0.0",
+                                                      power_on_at_boot=False, standby_at_shutdown=False,
+                                                      cec_ctl=str(tool))))
+    b.register_wait_s = 0
+    b.wait_on_s = 0
+    b.retry_gap_s = 0
+    b.power_on()
+    ls = log.read_text().splitlines()
+    i_setup = ls.index("-d /dev/null -p 1.0.0.0 --playback -o Projektor")
+    i_wake = ls.index("-d /dev/null --to 0 --image-view-on")
+    assert i_setup < i_wake

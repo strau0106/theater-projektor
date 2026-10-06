@@ -170,3 +170,32 @@ Recommendation: do the capture experiment first (cheap, 30 min). Then try option
 - Radio coexistence with WiFi on 2.4 GHz; BT on in a show environment adds RF noise and security surface (set non-discoverable, no pairing outside tests).
 - Pairing another BT device may evict the original remote if the projector supports one remote only; re-pair with Home + Return.
 - BD_ADDR spoofing on CYW43455 is vendor-specific and unreliable; skip unless all else fails.
+
+## CEC spec check
+
+Written from memory of the HDMI-CEC 1.4/2.0 spec and v4l-utils behaviour; not verified against the device.
+
+### 1. Spec: wake sequence and our compliance
+- One Touch Play: playback device sends directed <Image View On> (or <Text View On>) to logical address 0, then broadcast <Active Source>[phys]. Image vs Text differ only in whether the TV may show its menu; both must wake a TV from standby. Both are directed-only messages: a broadcast <Image View On> is invalid and should be ignored by the TV (our broadcast attempt proves nothing).
+- No polling is required before sending. A poll (`--poll`) is only a convenience to learn presence. A TV that wakes may need several seconds before it accepts <Active Source>; sending Active Source ~1-3 s later (or after <Report Power Status> = on) is more robust than back-to-back.
+- <User Control Pressed> must be followed by <User Control Released>. Without Release the sink treats the key as held until a ~550 ms timeout. Power Function keys act on press in most TVs, but some wait for Release. We sent Pressed without Released: this is a (minor) violation and should be fixed in tests.
+- Spec "standby" = CEC still answers <Give Device Power Status> and wakes on <Image View On>. A TV that is fully unpowered on CEC (no replies) is outside the spec; the spec does not guarantee wake from it. That matches the observed "sleep" state: the CEC engine is not running there.
+- Config: `--playback` already sends <Report Physical Address> and <Device Vendor ID>; logical address type and phys addr 1.0.0.0 are fine. No violations in addressing found.
+- Likely violations on our side: UCP without Released, and Image View On / Active Source sent back-to-back with no wait. Neither explains no-wake from a state where the TV does not answer at all.
+
+### 2. Checking ACK/NACK
+- Transmit with verbose output: `cec-ctl -d /dev/cec0 -v --to 0 --image-view-on`. The result line shows Tx status flags: OK, Not Acknowledged (CEC_TX_STATUS_NACK), Arbitration Lost, Low Drive, Error, Max Retries. A NACK is reported explicitly (e.g. "Tx, Not Acknowledged (4 attempts)"); a plain Tx timestamp with no flag line means OK, i.e. ACKed.
+- Cleanest ACK probe: `cec-ctl -d /dev/cec0 --to 0 --poll` (exit status/flags show ack of address 0). Repeat during sleep: `for i in 1 2 3; do cec-ctl -d /dev/cec0 --to 0 --poll; sleep 1; done`.
+- Watch the bus: `cec-ctl -d /dev/cec0 --monitor-all` (all traffic, including the TV's own); `--monitor-pin` only works if the adapter supports pin events (vc4-hdmi likely does not). `cec-ctl -d /dev/cec0 --show-topology` and `cec-ctl -d /dev/cec0 -S` show adapter state.
+- Use `--show-raw` to dump the raw frame bytes; `-t`/`--timeout` only affects waiting for replies, not ACK.
+
+### 3. XGIMI / MediaTek quirks (from memory, unverified)
+- Halo+ and Horizon-series support CEC mainly as TV-side: they react to <Active Source>/<Image View On> only while the SoC runs or in light standby. Reports from users: CEC wake from deep standby generally does not work on XGIMI; power is typically woken by the Bluetooth/IR remote or power button.
+- Android TV settings (names vary by firmware): Settings > Device Preferences > Inputs > HDMI CEC / Consumer Electronic Control: "HDMI CEC" (master), "One touch play" / "Allow TV to be turned on", "Device auto power off" / "Auto turn off devices", "TV auto power on". XGIMI-specific: "Power-on behaviour", "Standby mode" (quick/fast standby vs. deep sleep), "Fast startup"/"Quick boot", "Auto power on".
+- Android keeps CEC alive in suspend only when those toggles are on and the vendor CEC HAL/MCU supports wake-on-CEC. MediaTek typically powers the CEC controller down in deep sleep; the Bluetooth wake is handled by a separate path, so that works while CEC does not.
+
+### 4. Next tests (priority)
+1. Settings: enable HDMI CEC, One touch play / Allow TV to be turned on, TV auto power on; disable "Fast startup"/deep sleep options; retest sleep and standby.
+2. ACK check in the sleep state (see section 2): `cec-ctl -d /dev/cec0 -v --to 0 --poll`, then `--monitor-all` in a second terminal while the original remote wakes it (see if any CEC traffic appears at wake).
+3. Proper wake sequence in the "standby" state: `cec-ctl -d /dev/cec0 --to 0 --image-view-on; sleep 2; cec-ctl -d /dev/cec0 --to 0 --user-control-pressed ui-cmd=power-on-function; cec-ctl -d /dev/cec0 --to 0 --user-control-released; sleep 2; cec-ctl -d /dev/cec0 --active-source phys-addr=1.0.0.0`.
+4. Also try Standby (`--to 0 --standby`) followed by Image View On after 30 s, to learn whether "full shutdown" still acks.

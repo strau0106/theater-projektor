@@ -59,6 +59,8 @@ class Beamer:
         # "standby": CEC <Standby> (XGIMI: full shutdown); "power-key": remote power key (XGIMI: sleep)
         self.off_method = str(_cfg(settings, "off_method", "power-key"))
         self.retry_gap_s = 2.0
+        self.register_wait_s = 0.5
+        self.wait_on_s = 45.0  # power_on: wait this long for "on", then re-send <Active Source>  # logical address claim (polling) after re-registering
         self._lock = threading.Lock()
         self._threads: list[threading.Thread] = []
 
@@ -109,6 +111,22 @@ class Beamer:
             args += ["-p", self.phys_addr]
         self._run(*args, "--playback", "-o", "Projektor")
 
+    def ensure_registered(self) -> None:
+        """Re-register if the adapter lost its address.
+
+        When the beamer sleeps, the Pi's CEC adapter drops to physical address f.f.f.f with
+        no logical address; commands then go out from "Unregistered" (15) and the XGIMI
+        ignores <Image View On>. Re-claiming Playback (4) first makes the wake work."""
+        try:
+            out = self._run()
+        except BeamerError:
+            out = ""
+        m = _PHYS_RE.search(out)
+        if m is None or m.group(1).lower() == "f.f.f.f" or "Logical Address Mask       : 0x0000" in out:
+            log.info("beamer: CEC adapter unregistered, re-registering as playback device")
+            self.setup()
+            time.sleep(self.register_wait_s)
+
     def _our_phys_addr(self) -> str:
         if self.phys_addr:
             return self.phys_addr
@@ -118,6 +136,7 @@ class Beamer:
         return m.group(1)
 
     def power_on(self) -> None:
+        self.ensure_registered()
         last: BeamerError | None = None
         for i in range(3):  # CEC from standby can be slow
             try:
@@ -131,9 +150,22 @@ class Beamer:
         if last is not None:
             raise last
         self._sent_standby = False
-        self._run("--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
+        # Switch the beamer to our HDMI input. It boots for ~20 s after waking and may miss
+        # an early <Active Source>, so repeat it once it reports power "on".
+        if self.retry_gap_s > 0:
+            time.sleep(self.retry_gap_s)  # spec: give the TV time between the two messages
+        active = ("--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
+        self._run(*active)
+        deadline = time.monotonic() + self.wait_on_s
+        while time.monotonic() < deadline:
+            if self.status() == "on":
+                time.sleep(2.0)
+                self._run(*active)
+                break
+            time.sleep(3.0)
 
     def standby(self) -> None:
+        self.ensure_registered()
         if self.off_method == "power-key":
             # Like the remote's power button: XGIMI Halo+ goes to sleep (LED on) instead of
             # the full shutdown <Standby> triggers. Neither state can be woken over CEC.
