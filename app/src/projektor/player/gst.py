@@ -775,7 +775,19 @@ class GstPlayer(Player):
             sink.connect("handoff", self._on_handoff, r)
             sink.connect("preroll-handoff", self._on_handoff, r)
             r.sinkpad = sink.get_static_pad("sink")
-            return sink
+            # fakevideosink accepts ANY caps, so a VA-API decoder (PC) would hand over
+            # memory:VAMemory frames that the display mixer can't take (not-negotiated).
+            # Only offer dmabuf (Pi V4L2, zero copy), GL and plain system memory: VA
+            # decoders then download. The caps are unchanged on the Pi.
+            bin_ = Gst.Bin.new(None)
+            cf = Gst.ElementFactory.make("capsfilter", None)
+            cf.set_property("caps", Gst.Caps.from_string(
+                "video/x-raw(memory:DMABuf);video/x-raw(memory:GLMemory);video/x-raw"))
+            bin_.add(cf)
+            bin_.add(sink)
+            cf.link(sink)
+            bin_.add_pad(Gst.GhostPad.new("sink", cf.get_static_pad("sink")))
+            return bin_
         sinkbin = Gst.parse_bin_from_description(
             f"queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! videoconvert "
             f"! video/x-raw,format={_CLIP_FORMATS} "
