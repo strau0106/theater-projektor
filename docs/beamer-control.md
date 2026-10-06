@@ -128,3 +128,45 @@ IR test (only if CEC wake fails): add the overlays below to `system/boot/config-
 - Remote v2 backend (pairing CLI, key store, reconnect): about 1 day.
 - IR: about 0.5 day hardware plus 0.5 day software (code learning, send).
 - Docs/QLab cue examples: 1-2 hours.
+
+## Bluetooth remote wake (XGIMI Halo+)
+
+Measured: CEC `<Standby>` powers off fully, CEC power-toggle gives "sleep" (LED on) but CEC is dead there, `image-view-on` cannot wake it. The original remote wakes it, with no IR light, so the wake path is Bluetooth.
+
+### How the wake most likely works
+Only partly sourced; the rest is inference and must be verified by the experiment below.
+- The XGIMI remote is a Bluetooth remote (pairing: hold Home + Return within 10 cm; blue LED flashes; the projector plays a "ding" on success; the manual says the power key turns the unit on with a 2 s press). Source: Halo manual (https://www.manualslib.mx/manual/707356/Xgimi-Halo.html) and AVNirvana review (https://www.avnirvana.com/threads/xgimi-halo-1080p-led-portable-projector-review.9773/).
+- General BLE fact: a central cannot see a peripheral unless it advertises, so a sleeping host must keep its BT controller scanning with a filter and the remote must advertise (typically directed or undirected connectable advertising after a key press) and then reconnect (HOGP). Source: Nordic DevZone thread (https://devzone.nordicsemi.com/f/nordic-q-a/61126/remote-wake-up) and Nordic/TI HID keyboard docs: after a disconnect a HID device uses directed advertising to its bonded host (https://infocenter.nordicsemi.com/topic/com.nordic.infocenter.sdk5.v12.2.0/ble_sdk_app_hids_keyboard.html).
+- Inference (not found documented for XGIMI): the SoC keeps the MediaTek BT controller powered in sleep with a wake/allow-list filter on the bonded remote's address (or its IRK-resolved RPA). A remote key press then makes the controller wake the SoC; the key itself is delivered after reconnect. I found no public spec of an XGIMI-specific wake packet or manufacturer data, and no remote model number tied to this behavior (replacement remote listings are for B932C-class remotes, see https://www.pbtech.com/product/MOAXGM12501/XGIMI-B932C-Remote-Controller-For-XGIMI-Halo--MoGo, unverified for Halo+).
+- Precedent that a standard BLE keyboard can wake an Android TV box: Mi Box S kept Bluetooth on in sleep and an ESP32 BLE keyboard paired to it woke it by sending a key (Home Assistant community, ESPHome BLE keyboard: https://community.home-assistant.io/t/esphome-ble-keyboard/359552?page=2, projects https://github.com/dmamontov/esphome-blekeyboard and https://github.com/dionifreitas/playr-remote). This suggests a plain bonded HID keyboard is enough if the host filters on the bonded address, but XGIMI may differ (it may only accept its own remote or vendor GATT).
+
+### Options, ranked
+| # | Option | Feasibility | Reliability | Effort | Hardware |
+|---|--------|-------------|-------------|--------|----------|
+| 1 | Pi built-in BT as BLE HID keyboard (BlueZ), bond to the XGIMI, send power/key, rely on reconnect advertising for wake | medium; unproven for sleep | unknown; BlueZ HOGP peripheral mode is fiddly, Pi's radio is shared with WiFi | 1-2 days | none |
+| 2 | ESP32 (BLE keyboard lib or ESPHome) on Pi USB/UART acting as the remote, Pi sends commands over serial | medium-high (same protocol, precedent on Android TV boxes); same unknown on wake filter | better than 1: dedicated radio, mature NimBLE HID stacks, reconnect/directed adv controllable | 1-2 days | ESP32 board, about 10 EUR |
+| 3 | Original remote with optocoupler/relay across its power button, driven by Pi GPIO | certain | high (it is the real remote; needs its battery and BT link in range) | 0.5 day | opto/relay, soldering, remote kept inside the case |
+| 4 | Keep beamer awake (disable sleep; CEC power only for picture), never "shutdown" | high | high, but energy and lamp-less LED heat; only if a "never sleep" setting exists | hours | none |
+| 5 | Spoof the remote's BD_ADDR on the Pi (btmgmt/bdaddr) and replay captured adverts | low | low | days | none; the CYW43455 supports changing the public address only via vendor HCI (`bdaddr`-style tools exist for Broadcom, unverified on trixie); static random address via `btmgmt static-addr` is easy but is not the remote's public address; bonded RPAs with IRK cannot be reproduced without the remote's keys |
+
+Recommendation: do the capture experiment first (cheap, 30 min). Then try option 2 (ESP32) or 1 depending on what the capture shows. Option 3 is the fallback that always works. Option 4 is worth checking in XGIMI settings regardless.
+
+### Impact of enabling Bluetooth on the Pi 4
+- Pi 4 CYW43455 does WiFi and BT on one chip with coexistence (separate UART/SDIO paths, shared 2.4 GHz antenna). On 5 GHz WiFi coexistence is not an issue; on 2.4 GHz expect occasional latency spikes during BLE scan/advertising. Check which band the Pi uses (`iw dev wlan0 link`) before enabling; prefer 5 GHz or Ethernet for OSC.
+- LoRa is USB, unaffected. OSC latency: BLE advertising/connection events are short and low duty; keep scan windows off except during the experiment. (General knowledge, not measured here.)
+- Enable: remove `dtoverlay=disable-bt` from `system/boot/config-projektor.txt` (image) and reboot; also `sudo systemctl enable --now bluetooth`.
+
+### Next experiment (on the Pi)
+1. Enable BT: comment out `dtoverlay=disable-bt` in /boot/firmware/config.txt (or the projektor config), `sudo apt install bluez`, reboot. Check `rfkill list; hciconfig -a` (or `btmgmt info`).
+2. Put the beamer to sleep (LED on). Close to it, run in two terminals: `sudo btmon -w /tmp/wake.btsnoop` and `sudo bluetoothctl` then `scan on` (or `sudo hcitool lescan --duplicates`; `btmgmt find -l`).
+3. Note whether the beamer itself appears while sleeping (name "XGIMI Halo", address); if it does not advertise, a Pi-as-remote can still work only if it initiates the connection, which a sleeping host typically only accepts from an allow-listed address.
+4. Press power on the original remote (covered). In btmon look for the remote's advertising PDU (ADV_IND/ADV_DIRECT_IND), its address type (public/RPA), flags, appearance (0x03C1 keyboard / 0x0180 remote), service UUID 0x1812 (HID), manufacturer data, then the connection and HOGP traffic. Repeat 5 times to see if the payload is constant. Save the btsnoop and open it in Wireshark.
+5. Check while awake: `bluetoothctl scan on` with the beamer on; `info <remote addr>` shows UUIDs. Then in beamer settings, add a new BT device and see whether the Pi (advertising as a keyboard via `bluetoothctl` `advertise on` / `btmgmt` with appearance 0x03C1 and UUID 1812) is discoverable as a remote; if the XGIMI only lists audio devices, option 1/2 via the Bluetooth settings menu will not work and options 3/4 stay.
+6. If the XGIMI accepts a keyboard: pair, send a key (e.g. from an ESP32 or `bluez-hid2hci`/`hid-gadget`-style python-dbus HOGP script), then put it to sleep and press the key again.
+
+### Risks
+- XGIMI may only wake on its own remote (vendor-specific address filter or GATT/UUID); then only option 3 or 4 work.
+- BlueZ is a weak HOGP peripheral: bonding keys, reconnect advertising and the `input` plugin may need configuration (`bluetoothd -P input`/experimental `-E`); an ESP32 is simpler.
+- Radio coexistence with WiFi on 2.4 GHz; BT on in a show environment adds RF noise and security surface (set non-discoverable, no pairing outside tests).
+- Pairing another BT device may evict the original remote if the projector supports one remote only; re-pair with Home + Return.
+- BD_ADDR spoofing on CYW43455 is vendor-specific and unreliable; skip unless all else fails.

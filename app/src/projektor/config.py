@@ -133,6 +133,7 @@ class BeamerSettings(_Section):
     power_on_at_boot: bool = False
     standby_at_shutdown: bool = False
     cec_ctl: str = "cec-ctl"
+    off_method: Literal["power-key", "standby"] = "power-key"  # power-key = sleep on XGIMI
 
 
 class BackupSettings(_Section):

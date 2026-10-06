@@ -50,7 +50,8 @@ def test_commands(tmp_path):
         "-d /dev/cec0 -p 1.0.0.0 --playback -o Projektor",
         "-d /dev/cec0 --to 0 --image-view-on",
         "-d /dev/cec0 --to 15 --active-source phys-addr=1.0.0.0",
-        "-d /dev/cec0 --to 0 --standby",
+        "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=power-toggle-function",
+        "-d /dev/cec0 --to 0 --user-control-released",
         "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=exit",
         "-d /dev/cec0 --to 0 --user-control-released",
     ]
@@ -95,7 +96,7 @@ def test_osc(tmp_path):
     assert d.handle("/proj/beamer/key", ["up"], "osc") == []
     b.join()
     ls = lines(log)
-    assert "-d /dev/cec0 --to 0 --standby" in ls
+    assert "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=power-toggle-function" in ls
     assert "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=up" in ls
     assert d.handle("/proj/beamer/power", [1], "lora") == []
     b.join()
@@ -118,7 +119,7 @@ def test_web(tmp_path):
     assert c.post("/api/beamer/key", json={"key": "mute"}).status_code == 200
     assert c.post("/api/beamer/key", json={"key": "x"}).status_code == 400
     ls = lines(log)
-    assert "-d /dev/cec0 --to 0 --standby" in ls and any("ui-cmd=mute" in x for x in ls)
+    assert "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=power-toggle-function" in ls and any("ui-cmd=mute" in x for x in ls)
     b.cec_ctl = str(tmp_path / "missing")
     assert c.get("/api/beamer").json()["status"] == "unavailable"
     assert c.post("/api/beamer/power", json={"on": True}).status_code == 502

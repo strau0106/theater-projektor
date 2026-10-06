@@ -56,6 +56,8 @@ class Beamer:
         self.power_on_at_boot = bool(_cfg(settings, "power_on_at_boot", False))
         self.standby_at_shutdown = bool(_cfg(settings, "standby_at_shutdown", False))
         self.cec_ctl = str(_cfg(settings, "cec_ctl", "cec-ctl"))
+        # "standby": CEC <Standby> (XGIMI: full shutdown); "power-key": remote power key (XGIMI: sleep)
+        self.off_method = str(_cfg(settings, "off_method", "power-key"))
         self.retry_gap_s = 2.0
         self._lock = threading.Lock()
         self._threads: list[threading.Thread] = []
@@ -132,7 +134,13 @@ class Beamer:
         self._run("--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
 
     def standby(self) -> None:
-        self._run("--to", TV, "--standby")
+        if self.off_method == "power-key":
+            # Like the remote's power button: XGIMI Halo+ goes to sleep (LED on) instead of
+            # the full shutdown <Standby> triggers. Neither state can be woken over CEC.
+            self._run("--to", TV, "--user-control-pressed", "ui-cmd=power-toggle-function")
+            self._run("--to", TV, "--user-control-released")
+        else:
+            self._run("--to", TV, "--standby")
         self._sent_standby = True
 
     def status(self) -> str:
