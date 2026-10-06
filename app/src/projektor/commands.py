@@ -117,7 +117,11 @@ def _dedup_key(address: str, args: list) -> tuple:
 
 
 class CommandDispatcher:
-    def __init__(self, controller, settings: Settings, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, controller, settings: Settings, clock: Callable[[], float] = time.monotonic,
+                 beamer=None):
+        from .beamer import Beamer
+
+        self.beamer = beamer if beamer is not None else Beamer(settings)
         self.controller = controller
         self.settings = settings
         self.clock = clock
@@ -137,6 +141,9 @@ class CommandDispatcher:
             "reload": self._reload,
             "ping": self._ping,
             "state": self._state,
+            "beamer/power": self._beamer_power,
+            "beamer/status": self._beamer_status,
+            "beamer/key": self._beamer_key,
         }
 
     # ------------------------------------------------------------------ dedup
@@ -251,3 +258,26 @@ class CommandDispatcher:
 
     def _state(self, args: list) -> list[Reply]:
         return [("/proj/state", [json.dumps(self.controller.state(), separators=(",", ":"))])]
+
+    # beamer (HDMI-CEC); power/key run in a worker thread so OSC/LoRa threads never wait on CEC
+    def _beamer_power(self, args: list) -> list[Reply]:
+        self._nargs(args, 1, 1, "/proj/beamer/power <on|off|1|0>")
+        if coerce_bool(args[0], "power"):
+            self.beamer.background(self.beamer.power_on)
+        else:
+            self.beamer.background(self.beamer.standby)
+        return []
+
+    def _beamer_status(self, args: list) -> list[Reply]:
+        self._nargs(args, 0, 0, "/proj/beamer/status")
+        return [("/proj/beamer/status", [self.beamer.status()])]
+
+    def _beamer_key(self, args: list) -> list[Reply]:
+        self._nargs(args, 1, 1, "/proj/beamer/key <name>")
+        name = coerce_str(args[0], "key")
+        from .beamer import KEYS
+
+        if name.lower().replace("_", "-") not in KEYS:
+            raise ProjektorError(f"unknown key {name!r} (one of: {', '.join(KEYS)})")
+        self.beamer.background(self.beamer.key, name)
+        return []

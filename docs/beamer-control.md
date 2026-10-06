@@ -1,7 +1,18 @@
 # Beamer control from the Pi (Android TV projector)
 
 Goal: OSC commands such as `/proj/beamer/power on` drive the battery beamer (Android TV) from the Pi.
-Status: research only, nothing implemented. Everything below marked "test" must be verified on the real beamer.
+Status: CEC backend implemented (see "Implemented"); other backends are research only. Everything below marked "test" must be verified on the real beamer.
+
+## Implemented (CEC)
+Code: `app/src/projektor/beamer.py`, settings `[beamer]` (`enabled`, `device="/dev/cec0"`, `phys_addr="1.0.0.0"` or `""` = auto,
+`power_on_at_boot`, `standby_at_shutdown`, `cec_ctl="cec-ctl"`). Package `v4l-utils` is in the image.
+- OSC: `/proj/beamer/power on|off|1|0`, `/proj/beamer/status` (reply `/proj/beamer/status on|standby|unknown|unavailable`), `/proj/beamer/key <name>`.
+- Web: `GET /api/beamer`, `POST /api/beamer/power {"on": bool}`, `POST /api/beamer/key {"key": name}`; Live tab "Beamer" row, key pad on the System tab.
+- Power/key via OSC run in a worker thread; every `cec-ctl` call has a 6 s timeout. Missing tool/device: status `unavailable`, other calls report an error, the app keeps running.
+- `cec-ctl` calls (all with `-d /dev/cec0`): setup `-p 1.0.0.0 --playback -o Projektor`; on `--to 0 --image-view-on` (3 tries, 2 s gap) then
+  `--to 15 --active-source phys-addr=1.0.0.0`; standby `--to 0 --standby`; status `--to 0 --give-device-power-status` (parses `pwr-state:`);
+  key `--to 0 --user-control-pressed ui-cmd=<cmd>` then `--to 0 --user-control-released`
+  (`back`=exit, `home`=root-menu, `menu`=setup-menu; untested on the beamer).
 
 ## Facts from the repo
 - HDMI is KMS (`vc4-kms-v3d`), `hdmi_force_hotplug` is set for both ports, so the Pi outputs even when the beamer is off.

@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .. import ProjektorError
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -122,6 +123,7 @@ def create_app(
     power_cmds: dict | None = None,
     backup: BackupManager | None = None,
     prober: Prober | None = None,
+    beamer: Any = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     data_dir = Path(_cfg(settings, "paths.data_dir", "."))
@@ -141,6 +143,10 @@ def create_app(
     backup_mgr = backup or BackupManager(settings, show_store, controller)
     prober = prober or Prober()
     static_dir = Path(static_dir or STATIC_DIR)
+    if beamer is None:
+        from ..beamer import Beamer
+
+        beamer = getattr(dispatcher, "beamer", None) or Beamer(settings)
 
     # leftovers of interrupted uploads (power loss) - no upload can be running yet
     for p in media_dir.glob(UPLOAD_PREFIX + "*"):
@@ -642,6 +648,28 @@ def create_app(
             raise HTTPException(500, f"dispatcher error: {e}") from e
         return {"ok": True, "address": address, "args": args,
                 "replies": [{"address": a, "args": list(r)} for a, r in replies]}
+
+    # ------------------------------------------------------------------ beamer (HDMI-CEC)
+
+    @api.get("/beamer")
+    def beamer_status():
+        return {"enabled": beamer.enabled, "status": beamer.status()}
+
+    @api.post("/beamer/power")
+    def beamer_power(body: dict = Body(...)):
+        try:
+            beamer.power_on() if bool(body.get("on")) else beamer.standby()
+        except ProjektorError as e:
+            raise HTTPException(502, str(e)) from e
+        return {"ok": True}
+
+    @api.post("/beamer/key")
+    def beamer_key(body: dict = Body(...)):
+        try:
+            beamer.key(str(body.get("key", "")))
+        except ProjektorError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True}
 
     # ------------------------------------------------------------------ system
 

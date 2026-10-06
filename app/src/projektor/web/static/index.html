@@ -50,6 +50,14 @@
     <button class="stop" id="btnStop" style="grid-column: 1 / -1">STOP (cut to black)</button>
   </div>
 
+  <div class="card" id="beamerRow">
+    <div class="row">
+      <span class="grow">Beamer: <b id="beamerState">-</b></span>
+      <button class="small" id="beamerOn">Beamer on</button>
+      <button class="small danger" id="beamerOff">Beamer standby</button>
+    </div>
+  </div>
+
   <div class="card">
     <div class="seekrow">
       <button data-seek="-10">-10 s</button><button data-seek="-5">-5 s</button>
@@ -205,6 +213,13 @@
       <button id="logout" class="hidden">Log out</button>
     </div>
     <p class="muted small" id="pwInfo"></p>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary><b>Beamer key pad (HDMI-CEC)</b></summary>
+      <div class="row" id="beamerKeys" style="flex-wrap:wrap;margin-top:8px"></div>
+    </details>
   </div>
 
   <div class="card">

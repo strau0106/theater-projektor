@@ -153,6 +153,9 @@ Default UDP port **9000**. All addresses under `/proj`. Arguments in brackets ar
 | `/proj/reload` | — | Reload show.json. |
 | `/proj/ping` | — | Reply `/proj/pong <device_name>`. |
 | `/proj/state` | — | Reply `/proj/state <json-string>`. |
+| `/proj/beamer/power` | `on\|off\|1\|0` | Beamer on (HDMI-CEC image-view-on + active-source) or standby. Runs in a worker thread. |
+| `/proj/beamer/status` | — | Reply `/proj/beamer/status on\|standby\|unknown\|unavailable`. |
+| `/proj/beamer/key` | `name` | CEC key press: `up down left right select back home menu volume-up volume-down mute`. |
 
 Rules:
 - Any show command (`go cue play pause resume fadeout stop seek`) permanently hides the boot status

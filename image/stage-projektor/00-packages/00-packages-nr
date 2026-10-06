@@ -37,3 +37,5 @@ sudo
 # mDNS: reachable as <hostname>.local (ssh theater@projektor.local, http://projektor.local/)
 avahi-daemon
 libnss-mdns
+# HDMI-CEC beamer control (cec-ctl)
+v4l-utils

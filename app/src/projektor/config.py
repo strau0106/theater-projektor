@@ -125,6 +125,16 @@ class WebSettings(_Section):
     max_upload_mb: int = 8000
 
 
+class BeamerSettings(_Section):
+    """HDMI-CEC control of the beamer (docs/beamer-control.md)."""
+    enabled: bool = True
+    device: str = "/dev/cec0"
+    phys_addr: str = "1.0.0.0"  # our CEC physical address; "" = auto (from EDID)
+    power_on_at_boot: bool = False
+    standby_at_shutdown: bool = False
+    cec_ctl: str = "cec-ctl"
+
+
 class BackupSettings(_Section):
     enabled: bool = True
     host: str = "INFMK1_HOST"
@@ -143,6 +153,7 @@ class Settings(_Section):
     lora: LoraSettings = Field(default_factory=LoraSettings)
     web: WebSettings = Field(default_factory=WebSettings)
     backup: BackupSettings = Field(default_factory=BackupSettings)
+    beamer: BeamerSettings = Field(default_factory=BeamerSettings)
 
     # Not read from TOML: where the settings came from, and whether we run in PC dev mode.
     config_path: Path | None = Field(default=None, exclude=True)

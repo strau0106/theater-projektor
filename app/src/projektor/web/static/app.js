@@ -21,6 +21,9 @@ const OSC_REF = [
   ["/proj/reload", "-", "Reload show.json."],
   ["/proj/ping", "-", "Reply /proj/pong <device_name>."],
   ["/proj/state", "-", "Reply /proj/state <json-string>."],
+  ["/proj/beamer/power", "on|off|1|0", "Beamer on (HDMI-CEC image view on + active source) or standby."],
+  ["/proj/beamer/status", "-", "Reply /proj/beamer/status on|standby|unknown|unavailable."],
+  ["/proj/beamer/key", "name", "CEC key: up down left right select back home menu volume-up volume-down mute."],
 ];
 
 // ------------------------------------------------------------------ helpers
@@ -175,7 +178,7 @@ function setTab(name) {
   document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("section.tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + name));
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
-  if (name === "live") loadShow();
+  if (name === "live") { loadShow(); loadBeamer(); }
   if (name === "videos") loadVideos();
   if (name === "cues") loadShow().then(renderCues);
   if (name === "system") { loadSystem(); loadWifi(); loadBackup(); }
@@ -854,3 +857,21 @@ async function start() {
   } catch (e) { toast("cannot reach projector", true); }
   start();
 })();
+
+// ------------------------------------------------------------------ beamer (HDMI-CEC)
+async function loadBeamer() {
+  let r;
+  try { r = await api("GET", "/api/beamer"); } catch (e) { return; }
+  const el = $("beamerState");
+  el.textContent = r.enabled ? r.status : "disabled";
+  el.className = r.status === "on" ? "ok" : r.status === "unavailable" ? "err" : "";
+}
+async function beamerPower(on) {
+  const r = await act(() => api("POST", "/api/beamer/power", { on }), on ? "beamer on sent" : "beamer standby sent");
+  if (r) setTimeout(loadBeamer, 3000);
+}
+$("beamerOn").addEventListener("click", () => beamerPower(true));
+$("beamerOff").addEventListener("click", () => { if (confirm("Put the beamer into standby?")) beamerPower(false); });
+$("beamerKeys").append(...["up", "down", "left", "right", "select", "back", "home", "menu", "volume-up", "volume-down", "mute"]
+  .map((k) => h("button", { class: "small", onclick: () => act(() => api("POST", "/api/beamer/key", { key: k })) }, k)));
+loadBeamer();

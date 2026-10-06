@@ -24,7 +24,7 @@ def _setup_logging(level: str, dev: bool) -> None:
                         datefmt="%H:%M:%S", stream=sys.stderr)
 
 
-def _start_web(settings, controller, dispatcher, show_store):
+def _start_web(settings, controller, dispatcher, show_store, beamer):
     try:
         from .web.app import create_app  # type: ignore[import-not-found]
     except ImportError as e:
@@ -33,7 +33,7 @@ def _start_web(settings, controller, dispatcher, show_store):
     try:
         import uvicorn
 
-        app = create_app(settings, controller, dispatcher, show_store)
+        app = create_app(settings, controller, dispatcher, show_store, beamer=beamer)
         config = uvicorn.Config(app, host="0.0.0.0", port=settings.web.port, log_level="info",
                                 access_log=False)
         server = uvicorn.Server(config)
@@ -101,7 +101,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     show_store = ShowStore.from_settings(settings)
     controller = Controller(settings, show_store, player, GLibExecutor(),
                             status_builder=lambda st: build_status_text(settings, st))
-    dispatcher = CommandDispatcher(controller, settings)
+    from .beamer import Beamer
+
+    beamer = Beamer(settings)
+    dispatcher = CommandDispatcher(controller, settings, beamer=beamer)
     loop = GLib.MainLoop()
 
     controller.start()
@@ -117,6 +120,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     lora = _start_lora(settings, dispatcher, controller)
     web_server, web_thread = _start_web(settings, controller, dispatcher, show_store)
+
+    def beamer_boot() -> None:
+        beamer.setup()
+        if beamer.power_on_at_boot:
+            beamer.power_on()
+
+    if beamer.enabled:
+        beamer.background(beamer_boot)
 
     GLib.timeout_add(1000, controller.tick)
 
@@ -151,6 +162,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 log.exception("LoRa stop failed")
         if web_server is not None:
             web_server.should_exit = True
+        if beamer.enabled and beamer.standby_at_shutdown:
+            try:
+                beamer.standby()
+            except Exception as e:  # noqa: BLE001
+                log.warning("beamer standby at shutdown failed: %s", e)
         controller.shutdown()
         if web_thread is not None:
             web_thread.join(timeout=3)
