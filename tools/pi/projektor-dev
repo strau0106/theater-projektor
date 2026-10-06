@@ -16,6 +16,8 @@ case "$1" in
                  "avail_kb=$(awk '/MemAvail/{print $2}' /proc/meminfo) shmem_kb=$(awk '/^Shmem:/{print $2}' /proc/meminfo)" \
                  "cma_free_kb=$(awk '/CmaFree/{print $2}' /proc/meminfo) $(vcgencmd measure_temp) $(vcgencmd get_throttled)" \
                  "restarts=$(systemctl show projektor -p NRestarts --value)" ;;
+  lora)     # lora <projektor-lora-config args>; stop the service first (it holds the port)
+            shift; exec /opt/projektor/venv/bin/projektor-lora-config --port "/dev/serial/by-id/usb-1a86_*" "$@" ;;
   journal)  journalctl -u projektor --no-pager --since "${2:--5min}" ;;
   setting)  # setting <section.key> <toml value>, e.g. setting player.preload false
             python3 - "$2" "$3" <<'PY'
@@ -40,5 +42,5 @@ open(p, "w").write(s)
 print(f"{key} = {val}")
 PY
             ;;
-  *) echo "usage: projektor-dev deploy|restart|stop|start|snapshot|stats|journal [since]|setting <sec.key> <val>" >&2; exit 2 ;;
+  *) echo "usage: projektor-dev deploy|restart|stop|start|snapshot|stats|journal [since]|setting <sec.key> <val>|lora <args>" >&2; exit 2 ;;
 esac

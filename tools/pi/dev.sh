@@ -3,7 +3,7 @@
 #   tools/pi/dev.sh ssh 'uptime'                 run a command as the admin user
 #   tools/pi/dev.sh deploy                       push app/src/projektor + restart
 #   tools/pi/dev.sh snapshot out.png             frame currently on HDMI
-#   tools/pi/dev.sh stats|journal [since]|restart|stop|start|setting <sec.key> <val>
+#   tools/pi/dev.sh stats|journal [since]|restart|stop|start|setting <sec.key> <val>|lora <args>
 # One-time setup on the Pi: ~/.ssh/projektor_test.pub in authorized_keys, projektor-dev
 # installed in /usr/local/sbin + sudoers rule (see tools/pi/README.md).
 D=$(cd "$(dirname "$0")" && pwd)
