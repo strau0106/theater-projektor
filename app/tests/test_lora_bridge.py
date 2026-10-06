@@ -200,4 +200,4 @@ def test_duty_cycle_tracker():
 def test_auto_gap_exceeds_airtime():
     b = Bridge(serial="/dev/null-nope", listen=("127.0.0.1", 0))
     wire = len(lp.encode_frame(1, lp.build_osc("/proj/cue", [12])))
-    assert b._gap_s(wire) > b.airtime_s(wire) > 0.05
+    assert b._gap_s(wire) > b.airtime_s(wire) > 0.01  # SF7/500 kHz: ~18 ms

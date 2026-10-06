@@ -38,15 +38,15 @@ CHANNELS = range(0, 81)
 # except power and address, so an unconfigured pair still talks to each other.
 PROFILE_PROJEKTOR = {
     "sf": 7,          # spreading factor
-    "bw": 125,        # kHz
+    "bw": 500,        # kHz; tested 2026-10-06: RTT 62 ms vs 178 ms at 125 kHz, 0 % loss
     "cr": 1,          # 1 = 4/5
     "power": 10,      # dBm conducted; 6 dBi stock antenna -> ~14 dBm ERP (EU limit 25 mW ERP)
     "netid": 0,
     "lbt": 0,         # off: deterministic latency (LBT can delay up to 2 s)
     "mode": 1,        # stream / transparent
-    "channel": 18,    # 868.0 MHz
+    "channel": 17,    # 867.0 MHz: 500 kHz fits inside 865-868 MHz (1 %, 25 mW); ch 18 straddles 868.0
     "rssi": 0,        # no RSSI byte appended to received data
-    "addr": 20562,    # 0x5052 "PR"; both adapters must use the same address in stream mode
+    "addr": 0,        # both adapters must use the same address in stream mode (factory 0)
     "key": 0,         # no AES
 }
 PROFILES = {"projektor": PROFILE_PROJEKTOR, "factory": {

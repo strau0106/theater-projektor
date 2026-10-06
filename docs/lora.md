@@ -236,3 +236,33 @@ Tested PC (bridge) ↔ Pi 4 (projektor), same room, factory settings left as fou
   "projektor" profile (not required while both adapters keep identical factory settings).
 - Pitfall: never run `projektor-lora-config` on the Pi while the `projektor` service runs — both
   open the same serial port and the AT answers get mixed up. `sudo systemctl stop projektor` first.
+
+## Air-rate test (2026-10-06)
+
+`/proj/ping` RTT via the bridge (`--repeat 1`, Pi `sender_repeat=1`, `reply_delay_ms=0`), 30 pings each, 10 dBm:
+
+| Setting | RTT min/avg/max | Loss |
+|---|---|---|
+| SF7 / 125 kHz (old) | 178/178/179 ms | 1/30 |
+| SF7 / 250 kHz | 100/101/102 ms | 0 |
+| SF7 / 500 kHz | 60/62/63 ms | 0 |
+| SF6 / 500 kHz | 61/62/63 ms | 0 |
+| SF5 / 500 kHz | 61/62/63 ms | 0 |
+
+SF5/SF6 are accepted by the module (`AT+SF=5` -> `+SF=5`) but `projektor-lora-config --sf` rejects them;
+set them with `--raw "AT+SF=5"`. They give no RTT gain (about 60 ms is a fixed floor) and cost sensitivity.
+
+Chosen: **SF7 / 500 kHz**, CR 4/5, 10 dBm (about 3x faster than SF7/125). With `--repeat 2` and the default Pi
+reply delay the pong RTT is about 446 ms (10/10).
+
+Apply to both adapters (Pi: stop the service first; `--power 10` is needed, the factory profile would set 22 dBm):
+
+    projektor-lora-config --port /dev/ttyACM0 --apply --profile factory --sf 7 --bw 500 --bw-style index --power 10
+    tools/pi/dev.sh stop; tools/pi/dev.sh lora --apply --profile factory --sf 7 --bw 500 --bw-style index --power 10; tools/pi/dev.sh start
+
+Bridge flags: `--sf 7 --bw 500` (airtime and duty-cycle math).
+
+Band note: channel steps are 1 MHz, channel 18 = 868.0 MHz centre. A 500 kHz signal there covers 867.75-868.25 MHz,
+so half of it lies below the 868.0-868.6 MHz sub-band (1 % duty cycle); even 125 kHz at 868.0 straddles the edge.
+A centre of 868.3 MHz would fit (868.05-868.55) but the module cannot do it with 1 MHz steps; check whether the
+EU868 limits for 867.75-868.0 apply to this use, or choose the legal channel plan before production.

@@ -87,8 +87,8 @@ def test_apply_projektor_profile(monkeypatch, fast, capsys, style):
     assert mod.sent[0] == "+++" and mod.sent[-1] == "AT+EXIT"
     p = mod.applied
     assert (p["SF"], p["CR"], p["PWR"], p["TXCH"], p["RXCH"], p["ADDR"], p["MODE"], p["LBT"], p["RSSI"]) == \
-        (7, 1, 10, 18, 18, 20562, 1, 0, 0)
-    assert p["BW"] == (0 if style == "index" else 125)
+        (7, 1, 10, 17, 17, 0, 1, 0, 0)
+    assert p["BW"] == (2 if style == "index" else 500)
 
 
 def test_apply_overrides(monkeypatch, fast, capsys):
@@ -118,8 +118,8 @@ def test_dry_run_does_not_open_port(monkeypatch, capsys):
     monkeypatch.setattr(ws, "open_port", boom)
     assert ws.main(["--apply", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    for cmd in ("+++", "AT+MODE=1", "AT+SF=7", "AT+BW=0", "AT+PWR=10", "AT+TXCH=18", "AT+RXCH=18",
-                "AT+ADDR=20562", "AT+EXIT"):
+    for cmd in ("+++", "AT+MODE=1", "AT+SF=7", "AT+BW=2", "AT+PWR=10", "AT+TXCH=17", "AT+RXCH=17",
+                "AT+ADDR=0", "AT+EXIT"):
         assert cmd in out
 
 

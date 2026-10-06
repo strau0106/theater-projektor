@@ -92,7 +92,7 @@ class Bridge:
         wifi_target: tuple[str, int] | None = None,
         reply_to: tuple[str, int] | None = None,
         sf: int = 7,
-        bw_khz: int = 125,
+        bw_khz: int = 500,
         cr: int = 1,
         duty_limit: float = 0.01,
         poll_s: float = 2.0,
@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reply-to", type=parse_hostport, metavar="HOST:PORT",
                    help="send replies here (default: last OSC sender)")
     p.add_argument("--sf", type=int, default=7, help="LoRa spreading factor configured on the adapters (airtime calc)")
-    p.add_argument("--bw", type=int, default=125, choices=(125, 250, 500), help="LoRa bandwidth kHz (airtime calc)")
+    p.add_argument("--bw", type=int, default=500, choices=(125, 250, 500), help="LoRa bandwidth kHz (airtime calc)")
     p.add_argument("--duty-cycle", type=float, default=1.0, help="duty cycle limit in %% (default 1.0, EU868 g1)")
     p.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
     p.add_argument("-v", "--verbose", action="store_true")
