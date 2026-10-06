@@ -8,3 +8,24 @@ Host projektor-test
     StrictHostKeyChecking accept-new
     UserKnownHostsFile ~/.ssh/known_hosts_projektor
     LogLevel ERROR
+
+# Server for backups + reverse tunnel (key lives in the Bitwarden SSH agent)
+Host infmk1
+    HostName infmk1.rufusreglet.ch
+    User debian
+    IdentityFile ~/.ssh/infmk1_debian.pub
+    IdentitiesOnly yes
+    ConnectTimeout 15
+    LogLevel ERROR
+
+# The projector through its reverse tunnel on infmk1 (works from anywhere)
+Host projektor-remote
+    HostName localhost
+    Port 2222
+    User theater
+    IdentityFile ~/.ssh/projektor_test
+    IdentitiesOnly yes
+    ProxyJump infmk1
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts_projektor_remote
+    LogLevel ERROR

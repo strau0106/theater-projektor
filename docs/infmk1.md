@@ -119,3 +119,13 @@ To revoke access entirely (lost/stolen projector): on infmk1 empty
   `ClientAliveInterval 30`). autossh retries automatically.
 - `ss -ltn | grep -E ':(2222|8080)'` on infmk1 shows whether the tunnel is listening.
 - Only one projector can use the ports 2222/8080 at a time (single-device design).
+
+## Live setup (2026-10-06)
+
+- Server: `infmk1.rufusreglet.ch` (Debian 13, admin user `debian`, key in the Bitwarden SSH agent).
+  `server/setup-infmk1.sh` was run with the projector's `secrets/id_backup.pub` / `id_tunnel.pub`,
+  ports 2222 (ssh) / 8080 (web).
+- Verified: tunnel state `up`, `127.0.0.1:2222` + `:8080` listening on infmk1, rsync as `projbackup`
+  into `/srv/theater-projektor`, and a shell on the Pi from a PC via
+  `ssh -F tools/pi/ssh_config projektor-remote` (ProxyJump infmk1 → localhost:2222).
+- Web UI from anywhere: `ssh -F tools/pi/ssh_config -L 8080:localhost:8080 infmk1`, then http://localhost:8080/
