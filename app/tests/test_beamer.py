@@ -126,7 +126,8 @@ def test_web(tmp_path):
     assert "-d /dev/cec0 --to 0 --user-control-pressed ui-cmd=power-toggle-function" in ls and any("ui-cmd=mute" in x for x in ls)
     b.cec_ctl = str(tmp_path / "missing")
     assert c.get("/api/beamer").json()["status"] == "unavailable"
-    assert c.post("/api/beamer/power", json={"on": True}).status_code == 502
+    assert c.post("/api/beamer/power", json={"on": True}).status_code == 200  # runs in background; errors are logged
+    assert c.post("/api/beamer/source").status_code == 200
 
 
 def test_status_off_after_standby_without_reply(tmp_path):

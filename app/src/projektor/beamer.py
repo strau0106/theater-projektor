@@ -169,6 +169,11 @@ class Beamer:
                 break
             time.sleep(3.0)
 
+    def select_source(self) -> None:
+        """Switch the beamer to the Pi's HDMI input (<Active Source>)."""
+        self.ensure_registered()
+        self._run(*self._from, "--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
+
     def standby(self) -> None:
         self.ensure_registered()
         if self.off_method == "power-key":

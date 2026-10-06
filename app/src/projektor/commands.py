@@ -145,6 +145,7 @@ class CommandDispatcher:
             "beamer/power": self._beamer_power,
             "beamer/status": self._beamer_status,
             "beamer/key": self._beamer_key,
+            "beamer/source": self._beamer_source,
             "notify/test": self._notify_test,
         }
 
@@ -278,6 +279,11 @@ class CommandDispatcher:
     def _beamer_status(self, args: list) -> list[Reply]:
         self._nargs(args, 0, 0, "/proj/beamer/status")
         return [("/proj/beamer/status", [self.beamer.status()])]
+
+    def _beamer_source(self, args: list) -> list[Reply]:
+        self._nargs(args, 0, 0, "/proj/beamer/source")
+        self.beamer.background(self.beamer.select_source)
+        return []
 
     def _beamer_key(self, args: list) -> list[Reply]:
         self._nargs(args, 1, 1, "/proj/beamer/key <name>")

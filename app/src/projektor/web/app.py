@@ -670,10 +670,13 @@ def create_app(
 
     @api.post("/beamer/power")
     def beamer_power(body: dict = Body(...)):
-        try:
-            beamer.power_on() if bool(body.get("on")) else beamer.standby()
-        except ProjektorError as e:
-            raise HTTPException(502, str(e)) from e
+        # power_on waits for the beamer to boot (re-sends Active Source): don't block the request
+        beamer.background(beamer.power_on if bool(body.get("on")) else beamer.standby)
+        return {"ok": True}
+
+    @api.post("/beamer/source")
+    def beamer_source():
+        beamer.background(beamer.select_source)
         return {"ok": True}
 
     @api.post("/beamer/key")

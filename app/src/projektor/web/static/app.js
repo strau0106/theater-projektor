@@ -21,7 +21,8 @@ const OSC_REF = [
   ["/proj/reload", "-", "Reload show.json."],
   ["/proj/ping", "-", "Reply /proj/pong <device_name>."],
   ["/proj/state", "-", "Reply /proj/state <json-string>."],
-  ["/proj/beamer/power", "on|off|1|0", "Beamer on (HDMI-CEC image view on + active source) or standby."],
+  ["/proj/beamer/power", "on|off|1|0", "Beamer on (HDMI-CEC image view on + active source) or sleep."],
+  ["/proj/beamer/source", "", "Switch the beamer to the Pi's HDMI input (active source)."],
   ["/proj/beamer/status", "-", "Reply /proj/beamer/status on|standby|unknown|unavailable."],
   ["/proj/beamer/key", "name", "CEC key: up down left right select back home menu volume-up volume-down mute."],
 ];
@@ -876,6 +877,7 @@ async function beamerPower(on) {
   if (r) setTimeout(loadBeamer, 3000);
 }
 $("beamerOn").addEventListener("click", () => beamerPower(true));
+$("beamerSource").addEventListener("click", () => act(() => api("POST", "/api/beamer/source"), "input switch sent"));
 $("beamerOff").addEventListener("click", () => { if (confirm("Put the beamer into standby?")) beamerPower(false); });
 $("beamerKeys").append(...["up", "down", "left", "right", "select", "back", "home", "menu", "volume-up", "volume-down", "mute"]
   .map((k) => h("button", { class: "small", onclick: () => act(() => api("POST", "/api/beamer/key", { key: k })) }, k)));
