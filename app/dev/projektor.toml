@@ -1,0 +1,40 @@
+# Dev-mode settings for running on a PC: `projektor run --dev`
+# Relative paths are relative to this file's directory.
+
+[device]
+name = "projektor-dev"
+
+[paths]
+data_dir = "../devdata"
+net_status = "../devdata/run/net.json"
+tunnel_status = "../devdata/run/tunnel.json"
+
+[display]
+sink = "window"
+status_on_boot = true
+width = 1280
+height = 720
+
+[osc]
+port = 9000
+reply_host = ""
+reply_port = 0
+dedup_window_s = 1.0
+
+[lora]
+enabled = false
+device = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_*"
+baud = 115200
+
+[web]
+port = 8080
+password_hash = ""
+max_upload_mb = 8000
+
+[backup]
+enabled = false
+host = "INFMK1_HOST"
+port = 22
+user = "projbackup"
+key = "../devdata/id_backup"
+remote_dir = ""
