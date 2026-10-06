@@ -100,6 +100,7 @@ class Controller:
 
     def _do_start(self) -> None:
         self.player.start()
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -110,8 +111,29 @@ class Controller:
         except Exception:  # noqa: BLE001
             log.exception("player shutdown failed")
 
+    def _sync_prepare(self, discard: bool = False) -> None:
+        """Preload the standby cue in the player (player thread); idempotent."""
+        p = self.player
+        if discard:
+            p.discard_prepared()
+        if not self.settings.player.preload:
+            return
+        with self._lock:
+            si = self._standby_index
+            show = self._show
+        if si is None or si >= len(show.cues):
+            p.discard_prepared()
+            return
+        try:
+            clip = resolve_cue(show, si, self._media_dir())
+            if p.prepared_clip != clip:
+                p.prepare(clip)
+        except Exception as e:  # noqa: BLE001 - preloading is best effort
+            log.warning("preload failed: %s", e)
+
     def tick(self) -> bool:
         """Periodic (≈1 s, player thread): refresh status text, push position updates."""
+        self._sync_prepare()
         self._apply_status()
         if self.player.state != "idle":
             self._notify()
@@ -169,6 +191,7 @@ class Controller:
                 self._set_error("no standby cue (end of cue list)")
             else:
                 self._run_cue(idx, force=True)
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -186,6 +209,7 @@ class Controller:
             self._set_error(f"cue {cue_id!r} vanished (show reloaded)")
         else:
             self._run_cue(idx, force=False)
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -226,6 +250,7 @@ class Controller:
             idx = next((i for i, c in enumerate(self._show.cues) if c.id == cue_id), None)
             if idx is not None:
                 self._standby_index = idx
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -254,6 +279,7 @@ class Controller:
                 self._cue_index = None
                 self._error = None
             self.player.play(clip)
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -279,6 +305,7 @@ class Controller:
                 p.resume()
         elif what == "stop":
             p.stop()
+        self._sync_prepare()
         self._apply_status()
         self._notify()
 
@@ -347,6 +374,7 @@ class Controller:
             self._standby_index = new_sb
             self._show = show
         log.info("show reloaded: %d videos, %d cues", len(show.videos), len(show.cues))
+        self._sync_prepare(discard=True)
         self._apply_status()
         self._notify()
 
@@ -405,6 +433,7 @@ class Controller:
                 "cue_index": ci,
                 "standby": show.cues[si].id if si is not None and si < len(show.cues) else None,
                 "standby_index": si,
+                "prepared": pc.cue_id if (pc := p.prepared_clip) is not None else None,
                 "video": clip.video_id if clip is not None and pstate != "idle" else None,
                 "position": _round(p.position()) if pstate != "idle" else None,
                 "duration": _round(p.duration()) if pstate != "idle" else None,

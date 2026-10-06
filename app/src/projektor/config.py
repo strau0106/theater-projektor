@@ -41,6 +41,8 @@ DEV_CONFIG = Path(__file__).resolve().parents[2] / "dev" / "projektor.toml"
 
 EndMode = Literal["black", "hold", "loop"]
 SinkMode = Literal["auto", "gl", "kms", "window"]
+# Fade shapes (player/base.py fade_value): linear alpha, smoothstep, linear in perceived lightness.
+FadeCurve = Literal["linear", "scurve", "perceptual"]
 
 
 # --------------------------------------------------------------------------- settings
@@ -68,6 +70,14 @@ class DisplaySettings(_Section):
     height: int = Field(1080, gt=0)
     # Optional, not in the §6 example: output frame rate of the display pipeline.
     fps: int = Field(30, gt=0, le=120)
+    # Default fade shape; videos/cues may override it with `fade_curve` in show.json.
+    fade_curve: FadeCurve = "scurve"
+
+
+class PlayerSettings(_Section):
+    # Preroll the standby cue in a second clip pipeline so GO starts within ~1 frame.
+    # Costs a second decoder instance + its frame buffers (CMA on the Pi) while playing.
+    preload: bool = True
 
 
 class OscSettings(_Section):
@@ -107,6 +117,7 @@ class Settings(_Section):
     device: DeviceSettings = Field(default_factory=DeviceSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
     display: DisplaySettings = Field(default_factory=DisplaySettings)
+    player: PlayerSettings = Field(default_factory=PlayerSettings)
     osc: OscSettings = Field(default_factory=OscSettings)
     lora: LoraSettings = Field(default_factory=LoraSettings)
     web: WebSettings = Field(default_factory=WebSettings)
@@ -198,6 +209,7 @@ class Video(BaseModel):
     fade_in: float = 1.0
     fade_out: float = 2.0
     end: EndMode = "black"
+    fade_curve: FadeCurve | None = None  # null = settings display.fade_curve
 
     @field_validator("pause_points")
     @classmethod
@@ -239,6 +251,7 @@ class Cue(BaseModel):
     pause_points: list[float] | None = None
     end: EndMode | None = None
     start_at: float | None = None
+    fade_curve: FadeCurve | None = None  # null = inherit from the video
 
     @field_validator("id", "video", mode="before")
     @classmethod
@@ -396,6 +409,7 @@ class Clip:
     cue_id: str | None = None
     cue_index: int | None = None
     title: str = field(default="", compare=False)
+    fade_curve: FadeCurve | None = None  # None = player default (settings display.fade_curve)
 
 
 def resolve_cue_ref(show: Show, ref: str | int) -> int:
@@ -439,6 +453,7 @@ def _make_clip(
     start_at: float | None = None,
     cue_id: str | None = None,
     cue_index: int | None = None,
+    fade_curve: str | None = None,
 ) -> Clip:
     start = v.in_point if start_at is None else max(float(start_at), 0.0)
     pps = v.pause_points if pause_points is None else pause_points
@@ -456,6 +471,7 @@ def _make_clip(
         cue_id=cue_id,
         cue_index=cue_index,
         title=v.title,
+        fade_curve=v.fade_curve if fade_curve is None else fade_curve,  # type: ignore[arg-type]
     )
 
 
@@ -471,7 +487,7 @@ def resolve_cue(show: Show, index: int, media_dir: Path) -> Clip:
     return _make_clip(
         c.video, v, media_dir,
         fade_in=c.fade_in, fade_out=c.fade_out, pause_points=c.pause_points,
-        end=c.end, start_at=c.start_at, cue_id=c.id, cue_index=index,
+        end=c.end, start_at=c.start_at, cue_id=c.id, cue_index=index, fade_curve=c.fade_curve,
     )
 
 

@@ -161,3 +161,44 @@ def test_broken_file(gplayer, tmp_path):
     gplayer.play(Clip("x", bad, fade_in=0.0))
     assert run_until(lambda: gplayer.events["errors"], 10)
     assert gplayer.state == "idle"
+
+
+def test_preload_promote_start_at_exact(gplayer, clip_path):
+    clip = Clip("t", clip_path, start_at=1.0, pause_points=(1.5,), fade_in=0.0, end="hold")
+    gplayer.prepare(clip)
+    if gplayer.kind in ("fakesink", "kms"):
+        assert gplayer.prepared_clip is None  # CPU display: prepare() is a no-op
+    else:
+        assert gplayer.prepared_clip == clip
+        assert run_until(lambda: gplayer._prep.phase == "ready", 10)
+    gplayer.play(clip)
+    assert gplayer.prepared_clip is None
+    assert run_until(lambda: gplayer.state == "paused", 10), gplayer.events
+    assert gplayer.pause_reason == "pause_point"
+    assert abs(gplayer.position() - 1.5) < 1.0 / FPS + 0.001, gplayer.position()
+    assert gplayer.events["errors"] == []
+
+
+def test_preload_mismatch_and_discard(gplayer, clip_path):
+    if gplayer.kind == "fakesink":
+        pytest.skip("no preload on the CPU display")
+    gplayer.prepare(Clip("t", clip_path, start_at=1.0))
+    assert run_until(lambda: gplayer._prep.phase == "ready", 10)
+    gplayer.play(Clip("t", clip_path, start_at=0.5, fade_in=0.0, end="hold"))
+    assert gplayer.prepared_clip is None
+    assert run_until(lambda: gplayer.state == "playing", 5)
+    gplayer.prepare(Clip("t", clip_path, start_at=1.0))
+    gplayer.discard_prepared()
+    assert gplayer.prepared_clip is None and gplayer._prep is None
+
+
+def test_fade_curve_controller_no_jump(gplayer, clip_path):
+    if gplayer.kind == "fakesink":
+        pytest.skip("controller fades are GL only")
+    gplayer.play(Clip("t", clip_path, fade_in=1.0, end="hold", fade_curve="scurve"))
+    assert run_until(lambda: gplayer._fade_ctrl, 5)
+    assert run_until(lambda: 0.2 < gplayer._alpha() < 0.8, 3)
+    a = gplayer._alpha()
+    gplayer.fadeout(1.0)
+    assert abs(gplayer._alpha() - a) < 0.15
+    assert run_until(lambda: gplayer.state == "idle", 4)

@@ -46,9 +46,18 @@ so the frame at/after the pause point stays on screen (frame accurate).
 Loops (end=loop) use segment seeks (SEGMENT_DONE -> non-flushing seek to the in point), so
 there is no flush and no gap at the loop point.
 
-Preloading (hook, not used yet): a _Run is a self-contained clip pipeline; only the run in
-self._run feeds the display (see _on_handoff). A second run could be prerolled (PAUSED at
-its start frame) while another plays and be made current on GO without a visible gap.
+Fades (GL): the mixer pad's `alpha` is driven by a GstController (InterpolationControlSource
++ DirectControlBinding, control points in pipeline running time, ~1 per output frame), so
+the curve is evaluated by the streaming thread and does not depend on the Python main loop
+load. The state change at the end is a GLib timeout. Without GstController or in CPU mode a
+16 ms GLib timer applies the same curve (base.fade_alpha).
+
+Preloading: a _Run is a self-contained clip pipeline; only the run in self._run feeds the
+display (see _on_handoff). prepare(clip) builds ONE more run (self._prep), prerolled to
+PAUSED at its start frame (accurate seek) but not connected to the display; the sink keeps
+the prerolled sample. play(clip) with an equal clip promotes it: old run torn down, the
+kept preroll frame pushed to the display, then the normal _begin path (PLAYING + fade).
+GL mode only; in CPU mode (shared intervideosink channel) prepare() is a no-op.
 """
 
 from __future__ import annotations
@@ -66,8 +75,14 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
+try:
+    gi.require_version("GstController", "1.0")
+    from gi.repository import GstController  # noqa: E402
+except (ValueError, ImportError):  # pragma: no cover - depends on the GStreamer install
+    GstController = None
+
 from ..config import Clip, Settings  # noqa: E402
-from .base import Player, compute_state  # noqa: E402
+from .base import Player, compute_state, fade_alpha  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +93,7 @@ if not Gst.is_initialized():
 _PLAYBIN_FLAGS = 0x1 | 0x40
 _PP_TOLERANCE = 0.001  # s; frame pts rounding
 _FADE_TICK_MS = 16
+_MAX_CTRL_POINTS = 3000
 _POS_POLL_MS = 50
 # CPU mode: raw formats passed to the display (system memory, intervideosink).
 _CLIP_FORMATS = "{ I420, NV12, YV12, BGRA, RGBA, BGRx, RGBx }"
@@ -125,6 +141,7 @@ class _Display:
         self._held: deque[Gst.Buffer] = deque(maxlen=_HELD_FRAMES)
         self._bus_watch = False
         self.alpha = 0.0
+        self._binding = None  # GL: active alpha control binding
         self.status_visible = False
         self.status_text = ""
 
@@ -206,6 +223,7 @@ class _Display:
             return
         self.pipeline = None
         self.vsrc = None
+        self._binding = None
         self._held.clear()
         if self._bus_watch:
             p.get_bus().remove_signal_watch()
@@ -222,8 +240,54 @@ class _Display:
             w, dbg = msg.parse_warning()
             log.warning("display warning from %s: %s", msg.src.get_name(), w.message)
 
+    def current_alpha(self) -> float:
+        """Alpha now (reads the pad while a controller fade runs)."""
+        if self._binding is not None and self._video_pad is not None:
+            return float(self._video_pad.get_property("alpha"))
+        return self.alpha
+
+    def clear_fade(self) -> None:
+        """Remove a running controller fade, freezing alpha at its current value."""
+        b = self._binding
+        if b is None:
+            return
+        self._binding = None
+        if self._video_pad is not None:
+            a = float(self._video_pad.get_property("alpha"))
+            self._video_pad.remove_control_binding(b)
+            self._video_pad.set_property("alpha", a)
+            self.alpha = a
+
+    def ctrl_fade(self, a0: float, target: float, seconds: float, curve: str) -> bool:
+        """GL: fade alpha a0 -> target in `seconds` with a GstController. False if unsupported."""
+        p = self.pipeline
+        clock = p.get_clock() if p is not None else None
+        if not self.gl or GstController is None or clock is None or self._video_pad is None:
+            return False
+        try:
+            self.clear_fade()
+            self._video_pad.set_property("alpha", a0)
+            cs = GstController.InterpolationControlSource()
+            cs.set_property("mode", GstController.InterpolationMode.LINEAR)
+            b = GstController.DirectControlBinding.new(self._video_pad, "alpha", cs)
+            self._video_pad.add_control_binding(b)
+            self._binding = b
+            now = clock.get_time() - p.get_base_time()
+            n = 1 if curve == "linear" else min(_MAX_CTRL_POINTS, max(2, int(seconds * self.fps)))
+            cs.set(now, a0)
+            for i in range(1, n + 1):
+                t = i / n
+                cs.set(now + int(t * seconds * Gst.SECOND), fade_alpha(curve, t, a0, target))
+            self.alpha = a0
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("controller fade unavailable (%s); using timer", e)
+            self._binding = None
+            return False
+
     def set_video_alpha(self, a: float) -> None:
         a = min(1.0, max(0.0, a))
+        self.clear_fade()
         self.alpha = a
         if self.pipeline is None:
             return
@@ -340,6 +404,10 @@ class _Run:
         self.position: float | None = clip.start_at
         self.desired_paused = False
         self.begin_source: int | None = None
+        self.prepared = False  # built by prepare(), not yet promoted to current
+        self.was_prepared = False
+        self.sink: Gst.Element | None = None
+        self.t_trigger: float | None = None
 
 
 class GstPlayer(Player):
@@ -351,6 +419,7 @@ class GstPlayer(Player):
         self._channel = f"projektor-{os.getpid()}-{id(self)}"
         self._display: _Display | None = None
         self._run: _Run | None = None
+        self._prep: _Run | None = None  # prerolled standby clip (GL mode)
         self._lock = threading.Lock()  # protects _Run fields touched by the streaming thread
         self._paused: str | None = None
         self._holding = False
@@ -360,6 +429,8 @@ class GstPlayer(Player):
         self._fade_to = 0.0
         self._fade_t0 = 0.0
         self._fade_len = 0.0
+        self._fade_curve = "linear"
+        self._fade_ctrl = False
         self._poll_src: int | None = None
         self._status_visible = False
         self._status_text = ""
@@ -381,6 +452,7 @@ class GstPlayer(Player):
         d.status_visible = self._status_visible and self._state == "idle"
         d.status_text = self._status_text
         d.alpha = 1.0 if self._run is not None and self._run.phase == "started" and self._fade_dir == 0 else 0.0
+        self.discard_prepared()  # built for the old display
         self._display = d
         self.kind = kind
         self._display_ok = False
@@ -433,6 +505,7 @@ class GstPlayer(Player):
             if src is not None:
                 GLib.source_remove(src)
                 setattr(self, attr, None)
+        self.discard_prepared()
         self._unload()
         if self._display is not None:
             self._display.destroy()
@@ -470,7 +543,11 @@ class GstPlayer(Player):
             self._display.set_video_alpha(a)
 
     def _alpha(self) -> float:
-        return self._display.alpha if self._display is not None else 0.0
+        return self._display.current_alpha() if self._display is not None else 0.0
+
+    def _curve(self) -> str:
+        r = self._run
+        return (r.clip.fade_curve if r is not None else None) or self.settings.display.fade_curve
 
     # ------------------------------------------------------------------ fades
     def _start_fade(self, target: float, seconds: float) -> None:
@@ -480,9 +557,15 @@ class GstPlayer(Player):
         self._fade_t0 = time.monotonic()
         self._fade_len = max(0.0, seconds)
         self._fade_dir = 1 if target > self._fade_from else -1
+        self._fade_curve = self._curve()
         if self._fade_len <= 0:
             self._set_alpha(target)
             self._fade_done()
+            return
+        d = self._display
+        if d is not None and d.ctrl_fade(self._fade_from, target, self._fade_len, self._fade_curve):
+            self._fade_ctrl = True
+            self._fade_src = GLib.timeout_add(max(1, int(self._fade_len * 1000)), self._fade_ctrl_done)
             return
         self._fade_src = GLib.timeout_add(_FADE_TICK_MS, self._fade_tick)
 
@@ -490,11 +573,25 @@ class GstPlayer(Player):
         if self._fade_src is not None:
             GLib.source_remove(self._fade_src)
             self._fade_src = None
+        if self._fade_ctrl:
+            self._fade_ctrl = False
+            if self._display is not None:
+                self._display.clear_fade()  # freezes alpha where the fade got to
         self._fade_dir = 0
+
+    def _fade_ctrl_done(self) -> bool:
+        self._fade_src = None
+        self._fade_ctrl = False
+        d = self._display
+        if d is not None:
+            d.clear_fade()
+            d.set_video_alpha(self._fade_to)
+        self._fade_done()
+        return False
 
     def _fade_tick(self) -> bool:
         f = min(1.0, (time.monotonic() - self._fade_t0) / self._fade_len)
-        self._set_alpha(self._fade_from + (self._fade_to - self._fade_from) * f)
+        self._set_alpha(fade_alpha(self._fade_curve, f, self._fade_from, self._fade_to))
         if f >= 1.0:
             self._fade_src = None
             self._fade_done()
@@ -536,31 +633,47 @@ class GstPlayer(Player):
             if d is not None:
                 d.release_video()  # a frame the streaming thread pushed meanwhile
 
+    def _make_run(self, clip: Clip, path: Path, prepared: bool = False) -> _Run:
+        r = _Run(clip)
+        r.prepared = r.was_prepared = prepared
+        pb = Gst.ElementFactory.make("playbin3", None)
+        if pb is None:
+            raise RuntimeError("playbin3 not available")
+        pb.set_property("uri", path.resolve().as_uri())
+        pb.set_property("flags", _PLAYBIN_FLAGS)
+        pb.set_property("video-sink", self._clip_sink(r))
+        r.pipeline = pb
+        r.probe_id = r.sinkpad.add_probe(
+            Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK, self._probe, r
+        )
+        bus = pb.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_clip_message, r)
+        return r
+
     def play(self, clip: Clip) -> None:
+        t_trigger = time.monotonic()
+        prep = self._prep
+        d = self._display
+        if prep is not None and prep.clip == clip and prep.pipeline is not None and d is not None and d.gl:
+            self._prep = None
+            self._unload()
+            self._promote(prep, t_trigger)
+            return
+        self.discard_prepared()
         self._unload()
         path = Path(clip.path)
         if not path.is_file():
             self._update()
             self._fail(f"video file not found: {path}")
             return
-        r = _Run(clip)
         try:
-            pb = Gst.ElementFactory.make("playbin3", None)
-            if pb is None:
-                raise RuntimeError("playbin3 not available")
-            pb.set_property("uri", path.resolve().as_uri())
-            pb.set_property("flags", _PLAYBIN_FLAGS)
-            pb.set_property("video-sink", self._clip_sink(r))
-            r.pipeline = pb
-            r.probe_id = r.sinkpad.add_probe(
-                Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK, self._probe, r
-            )
-            bus = pb.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_clip_message, r)
+            r = self._make_run(clip, path)
         except Exception as e:  # noqa: BLE001
             self._fail(f"cannot create pipeline for {path.name}: {e}")
             return
+        r.t_trigger = t_trigger
+        pb = r.pipeline
         with self._lock:
             self._run = r
         self._clip = clip
@@ -573,6 +686,82 @@ class GstPlayer(Player):
         if pb.set_state(Gst.State.PAUSED) == Gst.StateChangeReturn.FAILURE:
             self._fail(f"cannot open {path.name}")
 
+    # ------------------------------------------------------------------ preloading
+    @property
+    def prepared_clip(self) -> Clip | None:
+        return self._prep.clip if self._prep is not None else None
+
+    def prepare(self, clip: Clip) -> None:
+        d = self._display
+        if self._shutting_down or d is None or d.pipeline is None or not d.gl:
+            return  # CPU mode shares one intervideosink channel: a second run would show up
+        if self._prep is not None and self._prep.clip == clip:
+            return
+        self.discard_prepared()
+        path = Path(clip.path)
+        if not path.is_file():
+            return
+        try:
+            r = self._make_run(clip, path, prepared=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("cannot prepare %s: %s", path.name, e)
+            return
+        self._prep = r
+        log.info("preparing %s (start %.3f)", path.name, clip.start_at)
+        if r.pipeline.set_state(Gst.State.PAUSED) == Gst.StateChangeReturn.FAILURE:
+            log.warning("cannot preload %s", path.name)
+            self.discard_prepared()
+
+    def discard_prepared(self) -> None:
+        r = self._prep
+        self._prep = None
+        if r is None:
+            return
+        p = r.pipeline
+        r.pipeline = None
+        if p is not None:
+            p.get_bus().remove_signal_watch()
+            p.set_state(Gst.State.NULL)
+
+    def _promote(self, r: _Run, t_trigger: float) -> None:
+        """Make the prepared run current (the old one is already unloaded)."""
+        r.prepared = False
+        r.t_trigger = t_trigger
+        clip = r.clip
+        with self._lock:
+            self._run = r
+        self._clip = clip
+        self._paused = None
+        self._holding = False
+        self._fade_dir = 1 if clip.fade_in > 0 else 0
+        log.info("promoting preloaded %s (start %.3f, out %s, pp %s, end %s)", Path(clip.path).name,
+                 clip.start_at, clip.out_point, list(clip.pause_points), clip.end)
+        self._update()
+        if r.phase == "ready":
+            self._ready(r)
+        # else: still prerolling / seeking; ASYNC_DONE continues as for a cold start
+
+    def _push_preroll(self, r: _Run) -> None:
+        """Show the prerolled frame a prepared run kept (its handoff was ignored)."""
+        sink = r.sink
+        d = self._display
+        if sink is None or d is None:
+            return
+        sample = sink.get_property("last-sample")
+        sink.set_property("enable-last-sample", False)  # don't pin a decoder buffer while playing
+        if sample is not None:
+            d.push_video(sample.get_buffer(), sample.get_caps())
+
+    def _ready(self, r: _Run) -> None:
+        if r is not self._run:
+            return  # prepared, waiting for play()
+        if r.was_prepared:
+            self._push_preroll(r)
+            if r.clip.fade_in > 0:  # alpha starts at 0: no need to wait for the display
+                r.begin_source = GLib.timeout_add(1, self._begin, r)
+                return
+        self._schedule_begin(r)
+
     def _clip_sink(self, r: _Run) -> Gst.Element:
         d = self._display
         if d is not None and d.gl:
@@ -581,7 +770,8 @@ class GstPlayer(Player):
             sink = Gst.ElementFactory.make("fakevideosink", None)
             sink.set_property("sync", True)
             sink.set_property("signal-handoffs", True)
-            sink.set_property("enable-last-sample", False)
+            sink.set_property("enable-last-sample", r.prepared)  # prepared: keep the preroll frame
+            r.sink = sink
             sink.connect("handoff", self._on_handoff, r)
             sink.connect("preroll-handoff", self._on_handoff, r)
             r.sinkpad = sink.get_static_pad("sink")
@@ -609,6 +799,13 @@ class GstPlayer(Player):
 
     def _on_clip_message(self, bus, msg, r: _Run) -> None:
         if r is not self._run:
+            if r is self._prep and r.prepared:
+                if msg.type == Gst.MessageType.ASYNC_DONE:
+                    self._on_async_done(r)
+                elif msg.type == Gst.MessageType.ERROR:
+                    err, _dbg = msg.parse_error()
+                    log.warning("preload of %s failed: %s", Path(r.clip.path).name, err.message)
+                    self.discard_prepared()
             return
         t = msg.type
         if t == Gst.MessageType.ASYNC_DONE:
@@ -657,10 +854,10 @@ class GstPlayer(Player):
             else:
                 r.phase = "ready"
             if r.phase == "ready":
-                self._schedule_begin(r)
+                self._ready(r)
         elif r.phase == "seeking":
             r.phase = "ready"
-            self._schedule_begin(r)
+            self._ready(r)
 
     def _schedule_begin(self, r: _Run) -> None:
         # Give the display ~2 frames to pick up the prerolled first frame before raising alpha.
@@ -672,6 +869,10 @@ class GstPlayer(Player):
         if r is not self._run:
             return False
         r.phase = "started"
+        if r.t_trigger is not None:
+            log.info("first frame after %d ms (%s)", (time.monotonic() - r.t_trigger) * 1000,
+                     "preloaded" if r.was_prepared else "cold")
+            r.t_trigger = None
         if self._paused is None:
             r.pipeline.set_state(Gst.State.PLAYING)
         if r.clip.fade_in > 0:

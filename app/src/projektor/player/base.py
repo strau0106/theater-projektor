@@ -26,6 +26,33 @@ ErrorCallback = Callable[[str], None]
 ACTIVE_STATES = ("fading_in", "playing", "paused", "holding", "fading_out")
 
 
+def fade_value(curve: str, t: float) -> float:
+    """Fade-in alpha for progress t in [0, 1] (clamped); 0 -> 0, 1 -> 1, monotonic.
+
+    linear: alpha = t.  scurve: smoothstep 3t^2 - 2t^3 (soft start and end).
+    perceptual: alpha = t ** 2.2, i.e. the inverse of a gamma-2.2 display response, so the
+    emitted light (and roughly the perceived brightness) rises evenly over time.
+    A fade-out uses the mirrored curve, see `fade_alpha`.
+    """
+    t = min(1.0, max(0.0, t))
+    if curve == "scurve":
+        return t * t * (3.0 - 2.0 * t)
+    if curve == "perceptual":
+        return t**2.2
+    return t
+
+
+def fade_alpha(curve: str, t: float, a0: float, target: float) -> float:
+    """Alpha at progress t of a fade from a0 to target (0 or 1).
+
+    Fade-in: a0 + (1 - a0) * fade_value(t); fade-out: a0 * fade_value(1 - t) (time-mirrored
+    curve). Starting from the current alpha means a mid-fade reversal never jumps.
+    """
+    if target > a0:
+        return a0 + (target - a0) * fade_value(curve, t)
+    return target + (a0 - target) * fade_value(curve, 1.0 - t)
+
+
 def compute_state(
     loaded: bool,
     paused: str | None,
@@ -128,6 +155,20 @@ class Player(ABC):
     @abstractmethod
     def set_status(self, visible: bool, text: str = "") -> None:
         """Show/hide the status screen (only drawn while idle)."""
+
+    def prepare(self, clip: Clip) -> None:
+        """Preload `clip` (the standby cue) so a following `play(clip)` starts at once.
+
+        At most one clip is prepared; preparing another discards the old one. Optional:
+        the default does nothing.
+        """
+
+    def discard_prepared(self) -> None:
+        """Drop the prepared clip, if any."""
+
+    @property
+    def prepared_clip(self) -> Clip | None:
+        return None
 
     def snapshot_png(self) -> bytes | None:
         """PNG of the current output frame, if supported."""

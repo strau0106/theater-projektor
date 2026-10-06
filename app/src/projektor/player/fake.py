@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 from ..config import Clip
-from .base import Player, compute_state
+from .base import Player, compute_state, fade_alpha
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,11 @@ class FakePlayer(Player):
         self._holding = False
         self._fade_dir = 0
         self._fade_rate = 0.0
+        self._fade_t = 0.0
+        self._fade_a0 = 0.0
+        self._fade_target = 1.0
+        self.prepared: Clip | None = None  # tests: the preloaded standby clip
+        self.promoted = False  # tests: last play() used the prepared clip
         self._pp: list[float] = []
         self._timer = None
 
@@ -107,8 +112,37 @@ class FakePlayer(Player):
         return [p for p in self._clip.pause_points if p > after + EPS]
 
     # ------------------------------------------------------------------ commands
+    @property
+    def prepared_clip(self) -> Clip | None:
+        return self.prepared
+
+    def prepare(self, clip: Clip) -> None:
+        self.calls.append(("prepare", clip.video_id, clip.cue_id))
+        name = Path(clip.path).name
+        if name in self.missing or (self.check_files and not Path(clip.path).exists()):
+            self.prepared = None
+            return
+        self.prepared = clip
+
+    def discard_prepared(self) -> None:
+        self.calls.append(("discard_prepared",))
+        self.prepared = None
+
+    def _curve(self) -> str:
+        assert self._clip is not None
+        return self._clip.fade_curve or "scurve"
+
+    def _start_fade(self, target: float, seconds: float) -> None:
+        self._fade_a0 = self.alpha
+        self._fade_target = target
+        self._fade_t = 0.0
+        self._fade_rate = 1.0 / seconds
+        self._fade_dir = 1 if target > self.alpha else -1
+
     def play(self, clip: Clip) -> None:
         self.calls.append(("play", clip.video_id, clip.cue_id))
+        self.promoted = self.prepared is not None and self.prepared == clip
+        self.prepared = None
         if self._clip is not None:
             self._unload()
         name = Path(clip.path).name
@@ -124,8 +158,7 @@ class FakePlayer(Player):
         self._pp = self._next_pps(clip.start_at)
         if clip.fade_in > 0:
             self.alpha = 0.0
-            self._fade_dir = 1
-            self._fade_rate = 1.0 / clip.fade_in
+            self._start_fade(1.0, clip.fade_in)
         else:
             self.alpha = 1.0
             self._fade_dir = 0
@@ -152,8 +185,7 @@ class FakePlayer(Player):
         if seconds <= 0 or self.alpha <= 0:
             self.stop()
             return
-        self._fade_dir = -1
-        self._fade_rate = 1.0 / seconds
+        self._start_fade(0.0, seconds)
         self._update()
 
     def stop(self) -> None:
@@ -201,14 +233,16 @@ class FakePlayer(Player):
             return
         # fades run in wall time, independent of pause
         if self._fade_dir > 0:
-            self.alpha = min(1.0, self.alpha + dt * self._fade_rate)
-            if self.alpha >= 1.0 - EPS:
+            self._fade_t = min(1.0, self._fade_t + dt * self._fade_rate)
+            self.alpha = fade_alpha(self._curve(), self._fade_t, self._fade_a0, 1.0)
+            if self._fade_t >= 1.0 - EPS:
                 self.alpha = 1.0
                 self._fade_dir = 0
                 self._update()
         elif self._fade_dir < 0:
-            self.alpha = max(0.0, self.alpha - dt * self._fade_rate)
-            if self.alpha <= EPS:
+            self._fade_t = min(1.0, self._fade_t + dt * self._fade_rate)
+            self.alpha = fade_alpha(self._curve(), self._fade_t, self._fade_a0, 0.0)
+            if self._fade_t >= 1.0 - EPS:
                 self._unload()
                 self._update()
                 return

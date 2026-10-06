@@ -113,9 +113,20 @@ Process model inside `projektor run`:
   kms fallback / headless tests: CPU display pipeline fed through intervideosink/src.
   Measured Pi 4 1 GB, 1080p30 H.264: playback 20–25 % CPU (app process, 4 cores = 400 %), idle
   black ~9 %, status screen ~14 %; v3d memory ~140 MB idle, ~200–230 MB while playing.
-  Preloading the standby cue: a clip pipeline is self-contained and only the current one feeds
-  the display, so a second one can be prerolled (PAUSED at its start frame) and switched to on GO
-  (not implemented yet; costs a second decoder instance + its CMA buffers).
+  Fades: GL mode drives the mixer pad `alpha` with a GstController (`InterpolationControlSource`
+  + `DirectControlBinding`, ~1 control point per output frame, running time), so fades do not
+  depend on main-loop load; a mid-fade reversal starts from the current alpha. Shape per
+  `display.fade_curve` (`linear | scurve` (default, smoothstep) `| perceptual` (t^2.2)), overridable
+  per video/cue (`fade_curve`); fade-out is the mirrored curve (`player/base.py: fade_value`).
+  kms/CPU path or no GstController: 16 ms timer applying the same curve.
+  Preloading the standby cue (`[player] preload = true`, GL mode only): `Player.prepare(clip)` builds
+  ONE extra clip pipeline prerolled to PAUSED at its start frame (accurate seek), not connected to
+  the display (its handoff is ignored, the sink keeps the preroll sample). `play(clip)` with an equal
+  clip (file, start, in/out, pause points, end, fades) promotes it: old pipeline torn down, preroll frame
+  pushed, then the normal start path (pause points, `start_at` behave identically). Any other clip
+  discards it. The controller re-prepares the standby cue after every command / show reload;
+  `discard_prepared()` on reload. Costs a second decoder instance + its CMA buffers. Log line
+  "first frame after N ms (preloaded|cold)". CPU/kms display: `prepare` is a no-op.
 - Video recommendation: Pi 4 → H.264 1080p (HW decode); Pi 5 → HEVC 1080p (HW) or H.264 (SW, ok ≤1080p30).
   Web UI shows codec/resolution of uploads (GstPbutils Discoverer) and warns.
 - Pause points: a blocking pad probe on the clip sink lets the frame at/after the pause point
@@ -177,6 +188,10 @@ sink = "auto"            # auto | gl | kms | window
 status_on_boot = true
 width = 1920
 height = 1080
+fade_curve = "scurve"    # linear | scurve | perceptual (per video/cue override: "fade_curve")
+
+[player]
+preload = true           # preroll the standby cue (second decoder; set false on memory pressure)
 
 [osc]
 port = 9000
@@ -217,7 +232,8 @@ remote_dir = ""          # relative to rrsync root on server
       "pause_points": [12.5, 40.0],
       "fade_in": 1.0,
       "fade_out": 2.0,
-      "end": "black"
+      "end": "black",
+      "fade_curve": null
     }
   },
   "cues": [
@@ -269,7 +285,7 @@ class Controller:
 
 ```json
 {"state": "idle|fading_in|playing|paused|holding|fading_out",
- "pause_reason": null, "cue": "1", "cue_index": 0, "standby": "2", "standby_index": 1,
+ "pause_reason": null, "cue": "1", "cue_index": 0, "standby": "2", "standby_index": 1, "prepared": "2",
  "video": "intro", "position": 12.5, "duration": 95.0, "status_screen": true,
  "last_command": {"address": "/proj/go", "args": [], "source": "osc|lora|web", "time": 1730000000.0},
  "transports": {"osc": "listening :9000", "lora": "connected /dev/ttyACM0|absent|disabled"}}

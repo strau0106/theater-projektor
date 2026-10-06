@@ -371,3 +371,78 @@ def test_deferred_executor_validates_synchronously(settings, store, player):
         c.cue(42)
     q.run()
     assert player.started and c.state()["cue"] == "1"
+
+
+# --------------------------------------------------------------------------- preload / fades
+def _ctrl(tmp_path, store, player, **player_settings):
+    from conftest import make_settings
+
+    c = Controller(make_settings(tmp_path, player=player_settings), store, player, executor=SyncExecutor())
+    c.start()
+    return c
+
+
+def test_preload_used_on_go(ctrl, player):
+    assert player.prepared is not None and player.prepared.cue_id == "1"
+    assert ctrl.state()["prepared"] == "1"
+    ctrl.go()
+    assert player.promoted
+    st = ctrl.state()
+    assert st["standby"] == "2" and st["prepared"] == "2"  # next standby preloaded
+
+
+def test_preload_mismatch_falls_back(ctrl, player):
+    ctrl.cue("3")  # standby 1 was prepared
+    assert not player.promoted
+    assert ctrl.state()["prepared"] == "finale"
+
+
+def test_standby_change_and_reload_discard(ctrl, player, store):
+    import json
+
+    ctrl.standby("2")
+    assert ctrl.state()["prepared"] == "2"
+    player.calls.clear()
+    show = json.loads(store.path.read_text())
+    show["cues"] = show["cues"][:1]
+    store.path.write_text(json.dumps(show))
+    ctrl.reload_show()
+    assert ("discard_prepared",) in player.calls
+    assert ctrl.state()["prepared"] is None or ctrl.state()["standby"] == ctrl.state()["prepared"]
+
+
+def test_preload_disabled_never_prepares(tmp_path, store, player):
+    c = _ctrl(tmp_path, store, player, preload=False)
+    c.go()
+    c.standby("3")
+    c.stop()
+    assert not any(call[0] == "prepare" for call in player.calls)
+    assert c.state()["prepared"] is None
+
+
+def test_fade_value_curves():
+    from projektor.player.base import fade_alpha, fade_value
+
+    for curve in ("linear", "scurve", "perceptual"):
+        assert fade_value(curve, 0) == 0 and fade_value(curve, 1) == 1
+        vals = [fade_value(curve, i / 20) for i in range(21)]
+        assert vals == sorted(vals)
+    assert fade_value("linear", 0.25) == 0.25
+    assert fade_value("scurve", 0.5) == 0.5 and fade_value("scurve", 0.25) < 0.25
+    assert fade_value("perceptual", 0.5) < 0.25
+    assert fade_alpha("scurve", 0.0, 1.0, 0.0) == 1.0 and fade_alpha("scurve", 1.0, 1.0, 0.0) == 0.0
+    assert fade_alpha("linear", 0.0, 0.3, 1.0) == 0.3  # starts from the current alpha
+
+
+def test_fake_mid_fade_reversal_no_jump(player):
+    from projektor.config import Clip
+
+    player.play(Clip("v", "/x/a.mp4", fade_in=2.0, fade_curve="scurve"))
+    player.advance(1.0)
+    a = player.alpha
+    assert 0.0 < a < 1.0
+    player.fadeout(2.0)
+    player.advance(1 / 30)
+    assert abs(player.alpha - a) < 0.1
+    player.advance(2.5)
+    assert player.state == "idle"
