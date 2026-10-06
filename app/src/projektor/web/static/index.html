@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Projektor</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="login" class="hidden">
+  <form class="card" id="loginForm">
+    <h2>Projektor</h2>
+    <label class="f">Password<input type="password" id="loginPw" autocomplete="current-password" autofocus></label>
+    <div class="row" style="margin-top:10px"><button class="primary grow" type="submit">Log in</button></div>
+    <div id="loginErr" class="err small" style="margin-top:6px"></div>
+  </form>
+</div>
+
+<header>
+  <div class="topbar">
+    <span class="dot" id="wsDot" title="live connection"></span>
+    <span class="name" id="devName">Projektor</span>
+    <span class="badge" id="hdrState">-</span>
+  </div>
+  <nav class="tabs">
+    <button data-tab="live" class="active">Live</button>
+    <button data-tab="videos">Videos</button>
+    <button data-tab="cues">Cues</button>
+    <button data-tab="system">System</button>
+  </nav>
+</header>
+
+<main>
+<!-- ================================================================ LIVE -->
+<section class="tab active" id="tab-live">
+  <div class="card now">
+    <div class="row"><span class="cue grow" id="nowCue">-</span><span class="badge" id="nowState">idle</span></div>
+    <div class="meta" id="nowVideo">no video</div>
+    <div class="progress" id="nowBarWrap"><div class="bar" id="nowBar"></div></div>
+    <div class="times"><span id="nowPos">0:00.0</span><span id="nowRemain"></span><span id="nowDur">-</span></div>
+    <div class="standby" id="nowStandby">Standby: -</div>
+    <div class="warn hidden" id="nowError"></div>
+  </div>
+
+  <div class="transport">
+    <button class="go" id="btnGo">GO</button>
+    <button class="pause" id="btnPause">PAUSE</button>
+    <button class="fade" id="btnFade">FADE OUT</button>
+    <button class="stop" id="btnStop" style="grid-column: 1 / -1">STOP (cut to black)</button>
+  </div>
+
+  <div class="card">
+    <div class="seekrow">
+      <button data-seek="-10">-10 s</button><button data-seek="-5">-5 s</button>
+      <button data-seek="5">+5 s</button><button data-seek="10">+10 s</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="inline grow"><input type="checkbox" id="statusToggle"> Status screen (only when idle)</label>
+      <button class="small" id="btnReload" title="reload show.json">Reload show</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Cues</h2>
+    <p class="muted small" style="margin:0 0 6px">Tap a cue for Run / Standby.</p>
+    <ul class="cuelist" id="liveCues"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Command</h2>
+    <form class="row" id="cmdForm">
+      <input class="grow mono" id="cmdLine" placeholder="/proj/cue 3" autocomplete="off" autocapitalize="off" spellcheck="false" list="cmdHints">
+      <button class="primary" type="submit">Send</button>
+    </form>
+    <datalist id="cmdHints"></datalist>
+    <div class="replies" id="cmdReplies"></div>
+    <h3>Last command</h3>
+    <div class="kv" id="lastCmd"></div>
+  </div>
+</section>
+
+<!-- ================================================================ VIDEOS -->
+<section class="tab" id="tab-videos">
+  <div class="card">
+    <h2>Upload</h2>
+    <div class="row">
+      <input type="file" id="upFile" accept="video/*,.mp4,.mkv,.mov,.m4v,.ts" class="grow">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="inline"><input type="checkbox" id="upOverwrite"> overwrite existing file</label>
+      <span class="grow"></span>
+      <button class="primary" id="upStart">Upload</button>
+      <button class="danger hidden" id="upCancel">Cancel</button>
+    </div>
+    <div id="upProgressWrap" class="hidden">
+      <div class="progress"><div class="bar" id="upBar"></div></div>
+      <div class="times"><span id="upPct"></span><span id="upRate"></span><span id="upEta"></span></div>
+    </div>
+    <div id="upMsg" class="small" style="margin-top:6px"></div>
+    <div class="muted small" id="diskInfo" style="margin-top:6px"></div>
+  </div>
+  <div class="card">
+    <div class="row"><h2 class="grow" style="margin:0">Videos</h2><button class="small" id="vidRefresh">Refresh</button></div>
+    <p class="muted small">Pi 4: H.264 up to 1080p. Pi 5: HEVC (hardware) or H.264 up to 1080p30 (software).</p>
+    <div id="videoList"></div>
+  </div>
+  <div class="card" id="orphanCard">
+    <h2>Unassigned files</h2>
+    <div id="orphanList"></div>
+  </div>
+</section>
+
+<!-- ================================================================ CUES -->
+<section class="tab" id="tab-cues">
+  <div class="card">
+    <div class="row"><h2 class="grow" style="margin:0">Cue list</h2><button class="primary" id="cueAdd">+ Add cue</button></div>
+    <p class="muted small">Empty override fields inherit from the video. Changes are saved immediately and reloaded into the player.</p>
+    <div id="cueList"></div>
+  </div>
+</section>
+
+<!-- ================================================================ SYSTEM -->
+<section class="tab" id="tab-system">
+  <div class="card">
+    <div class="row"><h2 class="grow" style="margin:0">Status</h2><button class="small" id="sysRefresh">Refresh</button></div>
+    <h3>Network</h3><div class="kv" id="sysNet"></div>
+    <h3>Remote tunnel</h3><div class="kv" id="sysTunnel"></div>
+    <h3>Device</h3><div class="kv" id="sysDevice"></div>
+    <h3>Transports</h3><div class="kv" id="sysTransports"></div>
+  </div>
+
+  <div class="card">
+    <h2>WiFi networks</h2>
+    <div id="wifiKnown" class="muted small">loading...</div>
+    <h3>Add network</h3>
+    <form id="wifiForm" class="grid2">
+      <label class="f">SSID<input id="wifiSsid" autocapitalize="off" autocomplete="off" required></label>
+      <label class="f">Password<input id="wifiPsk" type="password" autocomplete="new-password" placeholder="empty = open network"></label>
+      <label class="f">Priority<input id="wifiPrio" type="number" value="10"></label>
+      <div class="row" style="align-items:end"><button class="primary grow" type="submit">Add</button></div>
+    </form>
+    <div class="row" style="margin-top:10px">
+      <button id="wifiScan">Scan</button>
+      <button id="wifiRetry">Retry now</button>
+      <span class="muted small grow" id="wifiMsg"></span>
+    </div>
+    <div id="wifiScanList"></div>
+  </div>
+
+  <div class="card">
+    <h2>Backup</h2>
+    <div class="kv" id="bkInfo"></div>
+    <div id="bkProgressWrap" class="hidden">
+      <div class="progress"><div class="bar" id="bkBar"></div></div>
+      <div class="times"><span id="bkPct"></span><span id="bkRate"></span><span id="bkEta"></span></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="bkRun">Back up now</button>
+      <button class="danger hidden" id="bkCancel">Cancel</button>
+    </div>
+    <h3>Restore</h3>
+    <div class="grid2">
+      <label class="f">Show version<select id="bkSnap"><option value="latest">latest backup</option></select></label>
+      <div class="row" style="align-items:end"><button id="bkList">Load snapshots</button></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="inline grow"><input type="checkbox" id="bkMedia"> also restore video files</label>
+      <button class="danger" id="bkRestore">Restore</button>
+    </div>
+    <pre class="replies" id="bkLog"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Show file</h2>
+    <div class="row">
+      <a class="btn" href="/api/show/download" id="showDownload">Download show.json</a>
+      <label class="btn">Import show.json<input type="file" id="showImport" accept=".json,application/json" class="hidden"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Power</h2>
+    <div class="row">
+      <button class="danger" id="pwReboot">Reboot</button>
+      <button class="danger" id="pwShutdown">Shut down</button>
+      <span class="grow"></span>
+      <button id="logout" class="hidden">Log out</button>
+    </div>
+    <p class="muted small" id="pwInfo"></p>
+  </div>
+
+  <div class="card">
+    <h2>OSC command reference</h2>
+    <p class="muted small">UDP port <span id="oscPort">9000</span>. <code>ref</code> = cue id (string) or cue number (int, 1-based).</p>
+    <table class="ref"><thead><tr><th>Address</th><th>Args</th><th>Effect</th></tr></thead><tbody id="oscRef"></tbody></table>
+  </div>
+</section>
+</main>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
