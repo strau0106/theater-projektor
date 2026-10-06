@@ -34,3 +34,6 @@ autossh
 openssh-client
 rsync
 sudo
+# mDNS: reachable as <hostname>.local (ssh theater@projektor.local, http://projektor.local/)
+avahi-daemon
+libnss-mdns
