@@ -4,5 +4,7 @@
 #   tools/pi/pisudo.sh 'systemctl restart projektor'
 D=$(dirname "$0")
 ROOT=$(cd "$D/../.." && pwd)
-printf '%s\n' "$*" | "$D/pi.sh" 'cat > /tmp/.cmd.sh'
-sed -n 's/^ADMIN_PASSWORD=//p' "$ROOT/secrets/build.env" | "$D/pi.sh" "sudo -S -p '' sh /tmp/.cmd.sh; rm -f /tmp/.cmd.sh"
+# unique remote file name: parallel calls must not overwrite each other's command
+F="/tmp/.pisudo-$(hostname)-$$-$(date +%s%N).sh"
+printf '%s\n' "$*" | "$D/pi.sh" "cat > '$F'"
+sed -n 's/^ADMIN_PASSWORD=//p' "$ROOT/secrets/build.env" | "$D/pi.sh" "sudo -S -p '' sh '$F'; rm -f '$F'"
