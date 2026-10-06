@@ -99,13 +99,28 @@ Process model inside `projektor run`:
   fullscreen on HDMI-A-1. Fallback: `kmssink` (no GPU fades → videobalance brightness fade in CPU).
   Player selects sink via settings `display.sink = "auto" | "gl" | "kms" | "window"`.
 - PC dev mode: window (`glimagesink`/`autovideosink`), same pipeline otherwise.
-- Pipeline concept: per video a `uridecodebin3` branch → `glupload` → `glvideomixer` (sink pad alpha
-  animated for fades) over a black background; status screen = text rendered (textoverlay/cairo)
-  over black, shown/hidden via mixer alpha. One process owns the display the whole time.
+- Pipeline concept (details in `player/gst.py` docstring): one permanent **display pipeline**
+  `glvideomixer` (black background, video pad alpha animated for fades; a 16×16 live black
+  source keeps it producing frames) `! textoverlay ! gloverlaycompositor ! glimagesink`, plus one
+  **clip pipeline** per video: `playbin3` → `fakevideosink` whose handoff passes every frame
+  unchanged to an `appsrc` on the mixer (a segment maps file time → display running time).
+  Zero copy on the Pi 4: the V4L2 decoder's dmabufs are imported by `glupload` as EGLImages.
+  The sink must advertise `GstVideoMeta` in the allocation query (fakevideosink does; appsink /
+  intervideosink do not → the decoder copies every frame out of CMA and the display uploads
+  it on the CPU: 80–110 % CPU in v0.1). Pause/seek/EOS work on the clip pipeline; the mixer keeps
+  showing the last frame it got (pause, hold). Loops use segment seeks (no flush, no gap).
+  Status screen = textoverlay on the mixer output, drawn by the GPU, toggled via `silent`.
+  kms fallback / headless tests: CPU display pipeline fed through intervideosink/src.
+  Measured Pi 4 1 GB, 1080p30 H.264: playback 20–25 % CPU (app process, 4 cores = 400 %), idle
+  black ~9 %, status screen ~14 %; v3d memory ~140 MB idle, ~200–230 MB while playing.
+  Preloading the standby cue: a clip pipeline is self-contained and only the current one feeds
+  the display, so a second one can be prerolled (PAUSED at its start frame) and switched to on GO
+  (not implemented yet; costs a second decoder instance + its CMA buffers).
 - Video recommendation: Pi 4 → H.264 1080p (HW decode); Pi 5 → HEVC 1080p (HW) or H.264 (SW, ok ≤1080p30).
   Web UI shows codec/resolution of uploads (GstPbutils Discoverer) and warns.
-- Pause points: player watches position (≈10 ms poll on GLib loop) and pauses at the frame at/after
-  the pause point; `go`/`resume` continues.
+- Pause points: a blocking pad probe on the clip sink lets the frame at/after the pause point
+  through, holds back the next one and pauses the clip pipeline (frame accurate);
+  `go`/`resume` continues.
 
 ## 5. OSC command set
 

@@ -1,4 +1,5 @@
-"""Real GstPlayer, headless (CPU display pipeline with fakesink)."""
+"""Real GstPlayer, headless: CPU display pipeline (fakesink) and, if GL is available
+(EGL surfaceless / any display), the GL pipeline with the zero-copy appsrc handoff."""
 
 from __future__ import annotations
 
@@ -12,7 +13,8 @@ pytestmark = pytest.mark.gst
 gi = pytest.importorskip("gi")
 try:
     gi.require_version("Gst", "1.0")
-    from gi.repository import GLib, Gst
+    gi.require_version("GstVideo", "1.0")
+    from gi.repository import GLib, Gst, GstVideo
 
     Gst.init(None)
 except (ValueError, ImportError):  # pragma: no cover
@@ -57,14 +59,39 @@ def run_until(cond, timeout=10.0):
     return False
 
 
-@pytest.fixture
-def gplayer(tmp_path):
+def frame(player) -> bytes:
+    """Luma of the frame currently on the (headless) display."""
+    run_until(lambda: False, 0.15)  # let the display render a few frames
+    sample = player._display.sink.get_property("last-sample")
+    gray = GstVideo.video_convert_sample(sample, Gst.Caps.from_string("video/x-raw,format=GRAY8"), Gst.SECOND)
+    buf = gray.get_buffer()
+    ok, info = buf.map(Gst.MapFlags.READ)
+    try:
+        return bytes(info.data)
+    finally:
+        buf.unmap(info)
+
+
+def brightest(player) -> int:
+    return max(frame(player))
+
+
+GL_ELEMENTS = ["glvideomixer", "gloverlaycompositor", "fakevideosink", "appsrc", "gldownload"]
+
+
+@pytest.fixture(params=["fakesink", "glfakesink"])
+def gplayer(request, tmp_path):
+    if request.param == "glfakesink" and any(Gst.ElementFactory.find(e) is None for e in GL_ELEMENTS):
+        pytest.skip("GL elements missing")
     s = make_settings(tmp_path, display={"width": 320, "height": 180})
-    p = GstPlayer(s, sink="fakesink")
+    p = GstPlayer(s, sink=request.param)
     events = {"states": [], "errors": []}
     p.set_callbacks(lambda st, r: events["states"].append((st, r)), events["errors"].append)
     p.events = events  # type: ignore[attr-defined]
-    p.start()
+    try:
+        p.start()
+    except RuntimeError as e:
+        pytest.skip(f"display {request.param} not available: {e}")
     yield p
     p.shutdown()
     run_until(lambda: False, 0.1)
@@ -83,9 +110,11 @@ def test_pause_point_resume_eos(gplayer, clip_path):
     run_until(lambda: False, 0.1)
     assert gplayer.state == "paused" and abs(gplayer.position() - pos) < 0.001  # frozen
     assert gplayer.snapshot_png()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert brightest(gplayer) > 150  # the paused frame is on screen
     gplayer.resume()
     assert gplayer.state == "playing"
     assert run_until(lambda: gplayer.state == "idle", 10)  # end=black
+    assert brightest(gplayer) > 150  # idle again: status screen text
     states = [s for s, _ in gplayer.events["states"]]
     assert states == ["fading_in", "playing", "paused", "playing", "idle"], states
     assert gplayer.events["errors"] == []
@@ -95,12 +124,15 @@ def test_hold_seek_and_fadeout(gplayer, clip_path):
     gplayer.play(Clip("t", clip_path, start_at=1.5, fade_in=0.0, end="hold"))
     assert run_until(lambda: gplayer.state == "holding", 10), gplayer.events
     assert gplayer.position() > 2.3
+    time.sleep(0.3)
+    assert brightest(gplayer) > 150  # last frame held
     gplayer.seek(0.5)
     assert gplayer.state == "playing"
     assert run_until(lambda: (gplayer.position() or 0) > 0.8, 5)
     gplayer.fadeout(0.3)
     assert gplayer.state == "fading_out"
     assert run_until(lambda: gplayer.state == "idle", 5)
+    assert brightest(gplayer) < 40
 
 
 def test_loop_and_manual_pause(gplayer, clip_path):
@@ -108,8 +140,11 @@ def test_loop_and_manual_pause(gplayer, clip_path):
     run_until(lambda: False, 1.6)  # > 2 loop iterations of 0.5 s
     assert gplayer.state == "playing"
     assert 0.5 <= gplayer.position() <= 1.05
+    assert frame(gplayer) != frame(gplayer)  # moving picture (timeoverlay)
     gplayer.pause()
     assert gplayer.state == "paused" and gplayer.pause_reason == "manual"
+    a = frame(gplayer)
+    assert a == frame(gplayer) and max(a) > 150  # frozen frame stays on screen
     gplayer.stop()
     assert gplayer.state == "idle"
 

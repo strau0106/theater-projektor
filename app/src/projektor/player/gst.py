@@ -5,29 +5,57 @@ Two kinds of pipelines:
 * **Display pipeline** (permanent, created once, never torn down while running): owns the
   video sink so there is never a flash of the console between clips.
 
-      GL mode (sink gl / window):
-        videotestsrc(black, live) ! textoverlay ............ glvideomixer.sink_0  (status)
-        intervideosrc(channel) .............................. glvideomixer.sink_1  (video, alpha = fade)
-        glvideomixer(background=black) ! GL caps(W x H @ fps) ! glimagesink
+      GL mode (sink gl / window / glfakesink):
+        videotestsrc(black, 16x16, live) .................... glvideomixer.sink_0  (clock, alpha 0)
+        appsrc(live) ........................................ glvideomixer.sink_1  (video, alpha = fade)
+        glvideomixer(background=black) ! GL caps(W x H @ fps)
+          ! textoverlay(status) ! gloverlaycompositor ! glimagesink
 
       CPU mode (sink kms, headless test sinks):
         intervideosrc ! videoconvert ! videoscale ! caps(W x H) ! videobalance(fade)
                       ! textoverlay(status) ! videoconvert ! kmssink
 
-* **Clip pipeline** (one per playing video): playbin3 (video only) whose video sink is
-  `queue ! videoconvert ! intervideosink(channel)`. Pause/seek/EOS/position work on this
-  pipeline independently of the display. intervideosrc repeats the last frame it got, so a
-  paused / held clip keeps its frame on screen; black is produced via mixer alpha.
+* **Clip pipeline** (one per playing video): playbin3 (video only). Pause/seek/EOS/position
+  work on this pipeline independently of the display.
 
-Pause points: a blocking buffer probe on the intervideosink pad lets the first frame with
+      GL mode:  video-sink = fakevideosink(sync, signal-handoffs). Every rendered (and the
+                prerolled) frame is handed to the display appsrc as-is: zero copy, a Pi 4
+                V4L2 decoder dmabuf is imported by the mixer's glupload as an EGLImage.
+                The mixer keeps showing the last frame it got, so a paused / held clip
+                stays on screen; black is produced via mixer alpha.
+                Each frame travels with a segment that maps its file time to the display's
+                running time (see _Display.push_video).
+                Pi 5 (untested): the HEVC decoder outputs SAND/NC12 dmabufs; zero copy then
+                depends on EGL import of that modifier in Mesa v3d.
+      CPU mode: video-sink = queue ! videoconvert ! intervideosink(channel); intervideosrc
+                repeats the last frame (CPU copies; only for the kms fallback and tests).
+
+Why fakevideosink: it advertises GstVideoMeta in the allocation query. appsink and
+intervideosink do not, so the V4L2 decoder cannot hand out its padded dmabufs and copies
+every frame (from uncached CMA memory) into system memory, which the display then uploads
+on the CPU - that was 80-110 % CPU on a Pi 4 for 1080p30 (the v0.1 player).
+
+Status screen (GL): textoverlay on the mixer output only attaches an overlay composition
+meta (no CPU blending), gloverlaycompositor draws it on the GPU. Not a mixer input: a
+low-fps live status source would raise the mixer latency (it queued 15 RGBA 1080p frames).
+
+Pause points: a blocking buffer probe on the clip sink pad lets the first frame with
 stream time >= pause point through, blocks the following one and pauses the clip pipeline,
 so the frame at/after the pause point stays on screen (frame accurate).
+
+Loops (end=loop) use segment seeks (SEGMENT_DONE -> non-flushing seek to the in point), so
+there is no flush and no gap at the loop point.
+
+Preloading (hook, not used yet): a _Run is a self-contained clip pipeline; only the run in
+self._run feeds the display (see _on_handoff). A second run could be prerolled (PAUSED at
+its start frame) while another plays and be made current on GO without a visible gap.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections import deque
 import threading
 import time
 from pathlib import Path
@@ -51,14 +79,11 @@ _PLAYBIN_FLAGS = 0x1 | 0x40
 _PP_TOLERANCE = 0.001  # s; frame pts rounding
 _FADE_TICK_MS = 16
 _POS_POLL_MS = 50
-# Raw formats passed to the display (system memory). Pi-specific uncertainty: the Pi 4
-# V4L2 H.264 decoder should negotiate NV12/I420 in system memory here (one glupload copy per
-# frame); the Pi 5 HEVC decoder (v4l2slh265dec) may only offer tiled NV12_128C8 / DMA_DRM,
-# in which case videoconvert falls back to a CPU conversion (or negotiation fails) - verify
-# on hardware and add a dedicated conversion path if needed.
+# CPU mode: raw formats passed to the display (system memory, intervideosink).
 _CLIP_FORMATS = "{ I420, NV12, YV12, BGRA, RGBA, BGRx, RGBx }"
-STATUS_FPS = 2  # status text refreshes once per second
 _MAX_U64 = 2**64 - 1
+_HELD_FRAMES = 4  # GL: appsrc queue (2) + mixer pad queue + frame on screen
+_RESYNC_NS = 50 * Gst.MSECOND  # GL: re-anchor the clip -> display time mapping beyond this
 
 
 def resolve_sink(sink: str) -> str:
@@ -93,10 +118,11 @@ class _Display:
         self.pipeline: Gst.Pipeline | None = None
         self.sink: Gst.Element | None = None
         self._video_pad = None
-        self._status_pad = None
         self._balance = None
         self._text = None
-        self._valve = None
+        self.vsrc: Gst.Element | None = None  # GL: appsrc fed by the clip pipeline
+        self._vseg: Gst.Segment | None = None  # GL: maps clip timestamps to display time
+        self._held: deque[Gst.Buffer] = deque(maxlen=_HELD_FRAMES)
         self._bus_watch = False
         self.alpha = 0.0
         self.status_visible = False
@@ -115,26 +141,25 @@ class _Display:
     def build(self) -> None:
         W, H, F = self.width, self.height, self.fps
         textprops = self._textprops(W, H)
+        self._vseg = None
         if self.gl:
-            SW, SH = max(2, W // 2 // 2 * 2), max(2, H // 2 // 2 * 2)
             if self.kind == "glfakesink":
                 sink = "gldownload ! videoconvert ! fakesink name=out sync=true enable-last-sample=true"
             else:
-                # sync=false: the live mixer already paces output at the display framerate; a
-                # synced sink drops "late" frames on a Pi 4 (cross-pipeline handoff latency)
-                sink = "glimagesink name=out force-aspect-ratio=true enable-last-sample=true sync=false"
+                # sync=false: the live mixer already paces output at the display framerate.
+                # last-sample only while taking a snapshot: it pins one more 1080p texture.
+                sink = "glimagesink name=out force-aspect-ratio=true enable-last-sample=false sync=false"
             desc = (
                 f"glvideomixer name=mix background=black "
-                f"! video/x-raw(memory:GLMemory),width={W},height={H},framerate={F}/1 ! {sink} "
-                # status layer; the valve stops the CPU work while the status screen is hidden.
-                # Rendered at half resolution and STATUS_FPS, the mixer scales it up: a
-                # full-res 30 fps CPU text layer costs ~90 % CPU and ~300 MB on a Pi 4.
+                f"! video/x-raw(memory:GLMemory),width={W},height={H},framerate={F}/1 "
+                # status text: textoverlay only attaches an overlay meta, the GPU draws it
+                f"! textoverlay name=stext {textprops} ! gloverlaycompositor "
+                f"! video/x-raw(memory:GLMemory) ! {sink} "
+                # tiny live source: keeps the mixer producing frames at F fps (latency 1/F)
                 f"videotestsrc pattern=black is-live=true "
-                f"! video/x-raw,format=BGRA,width={SW},height={SH},framerate={STATUS_FPS}/1 "
-                f"! valve name=svalve drop=false ! textoverlay name=stext {self._textprops(SW, SH)} "
-                f"! queue max-size-buffers=3 ! mix.sink_0 "
-                f"intervideosrc name=vsrc channel={self.channel} timeout={_MAX_U64} "
-                f"! queue max-size-buffers=3 ! mix.sink_1 "
+                f"! video/x-raw,format=RGBA,width=16,height=16,framerate={F}/1 ! mix.sink_0 "
+                f"appsrc name=vsrc is-live=true format=time handle-segment-change=true min-latency=0 "
+                f"max-buffers=2 max-bytes=0 leaky-type=downstream ! mix.sink_1 "
             )
         else:
             if self.kind == "kms":
@@ -155,16 +180,14 @@ class _Display:
         self._text = p.get_by_name("stext")
         if self.gl:
             mix = p.get_by_name("mix")
-            self._status_pad = mix.get_static_pad("sink_0")
+            clock_pad = mix.get_static_pad("sink_0")
+            clock_pad.set_property("alpha", 0.0)
             self._video_pad = mix.get_static_pad("sink_1")
-            self._valve = p.get_by_name("svalve")
-            for pad, z in ((self._status_pad, 0), (self._video_pad, 1)):
-                pad.set_property("zorder", z)
-                pad.set_property("width", W)
-                pad.set_property("height", H)
-                pad.set_property("xpos", 0)
-                pad.set_property("ypos", 0)
-                pad.set_property("sizing-policy", 1)  # keep-aspect-ratio (letterbox)
+            self._video_pad.set_property("zorder", 1)
+            self._video_pad.set_property("width", W)
+            self._video_pad.set_property("height", H)
+            self._video_pad.set_property("sizing-policy", 1)  # keep-aspect-ratio (letterbox)
+            self.vsrc = p.get_by_name("vsrc")
         else:
             self._balance = p.get_by_name("bal")
         self.set_video_alpha(self.alpha)
@@ -182,6 +205,8 @@ class _Display:
         if p is None:
             return
         self.pipeline = None
+        self.vsrc = None
+        self._held.clear()
         if self._bus_watch:
             p.get_bus().remove_signal_watch()
             self._bus_watch = False
@@ -215,16 +240,56 @@ class _Display:
             return
         if self._text.get_property("text") != text:
             self._text.set_property("text", text)
-        if self.gl:
-            self._status_pad.set_property("alpha", 1.0 if visible else 0.0)
-            self._valve.set_property("drop", not visible)
-        else:
-            self._text.set_property("silent", not visible)
+        self._text.set_property("silent", not visible)
+
+    def push_video(self, buf: Gst.Buffer, caps: Gst.Caps | None) -> None:
+        """GL: show a clip frame (called from the clip streaming thread).
+
+        The buffer is pushed unchanged (zero copy; PyGObject can't make it writable to
+        re-timestamp it). Instead it travels with a segment that maps its file timestamp
+        to the display's running time "now"; the segment is re-anchored whenever the clip
+        timeline jumps relative to the display clock (start, seek, loop, resume).
+        """
+        src = self.vsrc
+        p = self.pipeline
+        clock = p.get_clock() if p is not None else None
+        if src is None or caps is None or clock is None or buf.pts == Gst.CLOCK_TIME_NONE:
+            return
+        now = clock.get_time() - p.get_base_time()
+        seg = self._vseg
+        if seg is None or buf.pts < seg.start or abs(now - (seg.base + buf.pts - seg.start)) > _RESYNC_NS:
+            seg = Gst.Segment()
+            seg.init(Gst.Format.TIME)
+            seg.start = seg.position = seg.time = buf.pts
+            seg.base = now
+            self._vseg = seg
+        # Keep the decoder buffers of the frames the display may still hold (appsrc queue,
+        # mixer queue + frame on screen) out of the decoder pool, so the decoder can't
+        # overwrite a frame that is still on screen (paused / held clip).
+        self._held.append(buf)
+        src.emit("push-sample", Gst.Sample.new(buf, caps, seg, None))
+
+    def release_video(self) -> None:
+        """GL: make the mixer drop the frame it holds (video alpha must be 0)."""
+        src = self.vsrc
+        if src is None:
+            return
+        src.send_event(Gst.Event.new_flush_start())
+        src.send_event(Gst.Event.new_flush_stop(False))
+        self._held.clear()
+        self._vseg = None
 
     def snapshot_png(self) -> bytes | None:
         if self.sink is None:
             return None
-        sample = self.sink.get_property("last-sample")
+        if self.sink.get_property("enable-last-sample"):
+            sample = self.sink.get_property("last-sample")
+        else:
+            # the sink renders in its own streaming thread, so a short sleep here is enough
+            self.sink.set_property("enable-last-sample", True)
+            time.sleep(3 / self.fps)
+            sample = self.sink.get_property("last-sample")
+            self.sink.set_property("enable-last-sample", False)
         if sample is None:
             return None
         caps = sample.get_caps()
@@ -459,12 +524,17 @@ class GstPlayer(Player):
         if r.begin_source is not None:
             GLib.source_remove(r.begin_source)
             r.begin_source = None
+        d = self._display
+        if d is not None:
+            d.release_video()  # give the decoder buffers back before the decoder goes away
         p = r.pipeline
         r.pipeline = None
         if p is not None:
             bus = p.get_bus()
             bus.remove_signal_watch()
             p.set_state(Gst.State.NULL)
+            if d is not None:
+                d.release_video()  # a frame the streaming thread pushed meanwhile
 
     def play(self, clip: Clip) -> None:
         self._unload()
@@ -480,15 +550,7 @@ class GstPlayer(Player):
                 raise RuntimeError("playbin3 not available")
             pb.set_property("uri", path.resolve().as_uri())
             pb.set_property("flags", _PLAYBIN_FLAGS)
-            sinkbin = Gst.parse_bin_from_description(
-                f"queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! videoconvert "
-                f"! video/x-raw,format={_CLIP_FORMATS} "
-                f"! intervideosink name=ivsink channel={self._channel} enable-last-sample=false",
-                True,
-            )
-            pb.set_property("video-sink", sinkbin)
-            ivsink = sinkbin.get_by_name("ivsink")
-            r.sinkpad = ivsink.get_static_pad("sink")
+            pb.set_property("video-sink", self._clip_sink(r))
             r.pipeline = pb
             r.probe_id = r.sinkpad.add_probe(
                 Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK, self._probe, r
@@ -511,6 +573,34 @@ class GstPlayer(Player):
         if pb.set_state(Gst.State.PAUSED) == Gst.StateChangeReturn.FAILURE:
             self._fail(f"cannot open {path.name}")
 
+    def _clip_sink(self, r: _Run) -> Gst.Element:
+        d = self._display
+        if d is not None and d.gl:
+            # Hands every frame to the display appsrc (see module docstring). fakevideosink
+            # advertises GstVideoMeta, so the V4L2 decoder passes its dmabufs on uncopied.
+            sink = Gst.ElementFactory.make("fakevideosink", None)
+            sink.set_property("sync", True)
+            sink.set_property("signal-handoffs", True)
+            sink.set_property("enable-last-sample", False)
+            sink.connect("handoff", self._on_handoff, r)
+            sink.connect("preroll-handoff", self._on_handoff, r)
+            r.sinkpad = sink.get_static_pad("sink")
+            return sink
+        sinkbin = Gst.parse_bin_from_description(
+            f"queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! videoconvert "
+            f"! video/x-raw,format={_CLIP_FORMATS} "
+            f"! intervideosink name=ivsink channel={self._channel} enable-last-sample=false",
+            True,
+        )
+        r.sinkpad = sinkbin.get_by_name("ivsink").get_static_pad("sink")
+        return sinkbin
+
+    def _on_handoff(self, sink, buf: Gst.Buffer, pad: Gst.Pad, r: _Run) -> None:
+        # clip streaming thread; only the current run feeds the display
+        d = self._display
+        if r is self._run and d is not None:
+            d.push_video(buf, pad.get_current_caps())
+
     def _fail(self, msg: str) -> None:
         log.error("%s", msg)
         self._unload()
@@ -525,6 +615,8 @@ class GstPlayer(Player):
             self._on_async_done(r)
         elif t == Gst.MessageType.EOS:
             self._on_eos(r)
+        elif t == Gst.MessageType.SEGMENT_DONE:
+            self._on_segment_done(r)
         elif t == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             log.debug("clip error debug: %s", dbg)
@@ -540,20 +632,24 @@ class GstPlayer(Player):
         if ok and dur > 0:
             r.duration = dur / Gst.SECOND
 
-    def _seek(self, r: _Run, start: float) -> bool:
+    def _seek(self, r: _Run, start: float, flush: bool = True) -> bool:
         c = r.clip
         stop_type = Gst.SeekType.SET if c.out_point is not None else Gst.SeekType.NONE
         stop = int(c.out_point * Gst.SECOND) if c.out_point is not None else -1
+        flags = Gst.SeekFlags.ACCURATE
+        if flush:
+            flags |= Gst.SeekFlags.FLUSH
+        if c.end == "loop":
+            flags |= Gst.SeekFlags.SEGMENT  # -> SEGMENT_DONE instead of EOS, gapless loop
         return r.pipeline.seek(
-            1.0, Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
-            Gst.SeekType.SET, int(start * Gst.SECOND), stop_type, stop,
+            1.0, Gst.Format.TIME, flags, Gst.SeekType.SET, int(start * Gst.SECOND), stop_type, stop,
         )
 
     def _on_async_done(self, r: _Run) -> None:
         if r.phase == "preroll":
             self._query_duration(r)
             c = r.clip
-            if c.start_at > 0.0005 or c.out_point is not None:
+            if c.start_at > 0.0005 or c.out_point is not None or c.end == "loop":
                 r.phase = "seeking"
                 if not self._seek(r, c.start_at):
                     log.warning("initial seek failed; starting from the beginning")
@@ -604,6 +700,16 @@ class GstPlayer(Player):
         else:
             self._unload()
             self._update()
+
+    def _on_segment_done(self, r: _Run) -> None:
+        # end=loop: queue the next pass without flushing (the last frame stays until the
+        # first frame of the next pass replaces it)
+        if r.fading_out:
+            return
+        with self._lock:
+            r.pp = [p for p in r.clip.pause_points if p > r.clip.in_point + 1e-6]
+        if not self._seek(r, r.clip.in_point, flush=False):
+            self._fail("loop seek failed")
 
     # ------------------------------------------------------------------ pause points
     def _probe(self, pad, info, r: _Run):
