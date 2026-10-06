@@ -59,7 +59,7 @@ class Beamer:
         self.cec_ctl = str(_cfg(settings, "cec_ctl", "cec-ctl"))
         # "standby": CEC <Standby> (XGIMI: full shutdown); "power-key": remote power key (XGIMI: sleep)
         self.off_method = str(_cfg(settings, "off_method", "power-key"))
-        self.retry_gap_s = 2.0
+        self.retry_gap_s = 1.0
         self.register_wait_s = 0.5
         self.wait_on_s = 45.0  # power_on: wait this long for "on", then re-send <Active Source>  # logical address claim (polling) after re-registering
         self._lock = threading.Lock()
@@ -164,10 +164,13 @@ class Beamer:
         deadline = time.monotonic() + self.wait_on_s
         while time.monotonic() < deadline:
             if self.status() == "on":
-                time.sleep(2.0)
-                self._run(*active)
+                # Android may still be starting its HDMI input service: send right away and
+                # repeat shortly after instead of one late attempt.
+                for pause in (0.0, 1.0, 2.0):
+                    time.sleep(pause)
+                    self._run(*active)
                 break
-            time.sleep(3.0)
+            time.sleep(1.0)
 
     def select_source(self) -> None:
         """Switch the beamer to the Pi's HDMI input (<Active Source>)."""
