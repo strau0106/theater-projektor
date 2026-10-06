@@ -227,6 +227,9 @@ key = "/var/lib/projektor/.ssh/id_tunnel"
 remote_ssh_port = {int(e["TUNNEL_SSH_PORT"])}
 remote_web_port = {int(e["TUNNEL_WEB_PORT"])}
 
+[beamer]
+power_on_at_boot = true   # wake the beamer via HDMI-CEC when the projector boots
+
 [notify]
 discord_webhook = {s(e.get("DISCORD_WEBHOOK_URL", ""))}
 mention = {s(e.get("DISCORD_MENTION", ""))}""")
