@@ -148,3 +148,9 @@ back. Server side everything is under `/srv/theater-projektor/`.
 Run the hardware checklist **[docs/bench-test.md](docs/bench-test.md)** after every
 new image (boot, WiFi, hotspot, every OSC command, LoRa, upload, backup, tunnel, power
 loss, battery runtime, beamer switched on late).
+
+## Preparing videos
+
+Convert clips to the Pi-optimal format (H.264 High, 1080p, CFR, keyframe every 0.5 s) with
+`projektor-prepare *.mov -o prepared/ --upload http://projektor.local --password-file pw.txt`.
+The Videos tab shows a "prepared" tag. Details: [docs/videos.md](docs/videos.md).

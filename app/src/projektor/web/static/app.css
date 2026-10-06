@@ -133,3 +133,4 @@ table.ref th { color: var(--muted); font-weight: 600; }
   background: #222; border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 #toast.show { opacity: 1; }
 #toast.error { border-color: var(--stop); color: #ffb4a8; }
+.tag.ok { background: var(--go); color: #fff; }

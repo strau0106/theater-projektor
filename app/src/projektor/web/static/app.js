@@ -362,7 +362,7 @@ function renderVideos() {
   $("orphanCard").classList.toggle("hidden", !d.files.length);
   for (const f of d.files) {
     ol.append(h("div", { class: "item" },
-      h("div", { class: "title" }, f.name),
+      h("div", { class: "title" }, f.name, preparedTag(f.probe)),
       h("div", { class: "sub" }, fmtBytes(f.size), probeLine(f.probe) ? " - " + probeLine(f.probe) : ""),
       (f.warnings || []).map((w) => h("div", { class: "warn" }, w)),
       h("div", { class: "row", style: "margin-top:8px" },
@@ -371,11 +371,17 @@ function renderVideos() {
   }
 }
 
+function preparedTag(p) {
+  if (!p || p.error || !p.prepared) return null;
+  const ki = p.keyframe_interval ? `, keyframe ${Number(p.keyframe_interval).toFixed(2)} s` : "";
+  return h("span", { class: "tag ok", title: "transcoded with projektor-prepare" + ki }, "prepared");
+}
+
 function videoItem(v) {
   const el = h("div", { class: "item" },
     h("div", { class: "row" },
       h("div", { class: "grow" },
-        h("div", { class: "title" }, v.title || v.id, h("span", { class: "muted small" }, `  [${v.id}]`)),
+        h("div", { class: "title" }, v.title || v.id, h("span", { class: "muted small" }, `  [${v.id}]`), preparedTag(v.probe)),
         h("div", { class: "sub" }, `${v.file} - ${fmtBytes(v.size)}`, probeLine(v.probe) ? h("br") : null, probeLine(v.probe) || ""),
         h("div", { class: "sub" },
           `in ${fmtTime(v.in_point)} - out ${v.out_point === null ? "end" : fmtTime(v.out_point)} - fade ${v.fade_in}/${v.fade_out} s - end: ${v.end}` +
