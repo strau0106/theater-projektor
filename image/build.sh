@@ -61,6 +61,7 @@ INFMK1_PORT="${INFMK1_PORT:-22}"
 TUNNEL_SSH_PORT="${TUNNEL_SSH_PORT:-2222}"
 TUNNEL_WEB_PORT="${TUNNEL_WEB_PORT:-8080}"
 WIFI_NETWORKS="${WIFI_NETWORKS:-}"
+WIFI_CA_FILES="${WIFI_CA_FILES:-}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-DE}"
 [ -n "${ADMIN_PASSWORD:-}" ] || die "ADMIN_PASSWORD empty in build.env"
 [[ "${ADMIN_USER}" =~ ^[a-z][-a-z0-9_]*$ ]] || die "invalid ADMIN_USER"
@@ -235,6 +236,11 @@ python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${F}/pr
 		echo "${WIFI_NETWORKS}" | tr '|' '\n' | sed '/^[[:space:]]*$/d'
 	fi
 } > "${F}/projektor-wifi.txt"
+# CA certificates for WPA-Enterprise lines (`ca=<name>.pem`): WIFI_CA_FILES="/path/a.pem /path/b.pem"
+mkdir -p "${F}/wifi-ca"
+for ca in ${WIFI_CA_FILES:-}; do
+	install -m 644 "${ca}" "${F}/wifi-ca/$(basename "${ca}")"
+done
 chmod -R go-rwx "${F}"
 
 # ---------------------------------------------------------------- pi-gen config

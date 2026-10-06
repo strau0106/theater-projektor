@@ -57,6 +57,9 @@ echo "${line}" | xargs > "${CMD}"
 echo "cmdline.txt: $(cat "${CMD}")"
 
 install -m 644 "${F}/projektor-wifi.txt" "${BOOT}/projektor-wifi.txt"
+for ca in "${F}"/wifi-ca/*.pem; do
+	[ -e "${ca}" ] && install -m 644 "${ca}" "${BOOT}/$(basename "${ca}")"
+done
 
 # ---- hostname (also set by pi-gen stage1; repeated here so --fast picks up changes)
 echo "${DEVICE_NAME}" > "${ROOTFS_DIR}/etc/hostname"
