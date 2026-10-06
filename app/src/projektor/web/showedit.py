@@ -70,6 +70,7 @@ class ShowAccess:
         self.controller = controller
         self.lock = threading.RLock()
         self._cls: type | None = None
+        self.on_change: Any = None  # optional callable(): called after a successful save
 
     def get(self) -> dict:
         with self.lock:
@@ -95,6 +96,11 @@ class ShowAccess:
             except Exception as e:  # validation / ProjektorError / ValueError
                 raise ShowEditError(f"invalid show: {e}", 422, validation_detail(e)) from e
             result = self.get()
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:  # noqa: BLE001
+                pass
         if reload:
             try:
                 self.controller.reload_show()

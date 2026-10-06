@@ -750,8 +750,13 @@ $("wifiRetry").addEventListener("click", () => act(() => api("POST", "/api/wifi/
 
 // backup
 function renderBackup(b) {
-  const lb = b.last_backup, lr = b.last_restore;
+  const lb = b.last_backup, lr = b.last_restore, au = b.auto || {};
+  const autoTxt = !au.enabled ? "off" : !au.active ? "on (inactive)"
+    : "on" + (au.pending ? ", pending" : ", up to date") +
+      (au.last_error ? ` - last error: ${au.last_error}` : "") +
+      (au.pending && au.next_retry ? `, next try ${new Date(au.next_retry * 1000).toLocaleTimeString()}` : "");
   kv($("bkInfo"), [
+    ["Auto backup", autoTxt, au.last_error && au.pending ? "err" : ""],
     ["Server", b.enabled ? (b.configured ? b.remote : "not configured") : "backup disabled", b.enabled && b.configured ? "" : "err"],
     ["Last backup", lb ? `${lb.state} - ${fmtAge(lb.finished)}` : "never", lb && lb.state !== "done" ? "err" : ""],
     ["Last restore", lr ? `${lr.state} - ${fmtAge(lr.finished)}` : "never"],

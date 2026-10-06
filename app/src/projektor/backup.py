@@ -198,6 +198,8 @@ class BackupManager:
         st["remote"] = self.remote
         st["last_backup"] = self._history.get("backup")
         st["last_restore"] = self._history.get("restore")
+        auto = getattr(self, "auto", None)
+        st["auto"] = auto.status() if auto is not None else {"enabled": False, "active": False, "pending": False}
         return st
 
     def _update(self, **kw) -> None:

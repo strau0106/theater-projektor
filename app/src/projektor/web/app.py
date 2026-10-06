@@ -124,6 +124,7 @@ def create_app(
     backup: BackupManager | None = None,
     prober: Prober | None = None,
     beamer: Any = None,
+    notifier: Any = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     data_dir = Path(_cfg(settings, "paths.data_dir", "."))
@@ -141,7 +142,15 @@ def create_app(
     wifi = WifiCli(wifi_cmd if wifi_cmd is not None else _cfg(settings, "web.wifi_cmd") or default_wifi_cmd(data_dir, dev_mode))
     power = power_cmds if power_cmds is not None else default_power_cmds(dev_mode)
     backup_mgr = backup or BackupManager(settings, show_store, controller)
+    auto_backup = None
+    if backup is None:  # injected managers (tests) get no background auto-backup
+        from projektor.autobackup import AutoBackup
+
+        auto_backup = AutoBackup(backup_mgr, settings).start()
+        backup_mgr.auto = auto_backup
+        access.on_change = auto_backup.trigger
     prober = prober or Prober()
+    notifier = notifier or getattr(dispatcher, "notifier", None)
     static_dir = Path(static_dir or STATIC_DIR)
     if beamer is None:
         from ..beamer import Beamer
@@ -406,6 +415,8 @@ def create_app(
             except FileNotFoundError:
                 raise HTTPException(404, f"no such file: {fname}") from None
             _fsync_dir(media_dir)
+        if auto_backup is not None:
+            auto_backup.trigger("file deleted")
         return {"ok": True}
 
     @api.get("/videos/{vid}/probe")
@@ -491,6 +502,8 @@ def create_app(
                 return vid
 
             video_id = await run_in_threadpool(access.modify, mut)
+        if auto_backup is not None:
+            auto_backup.trigger("upload")
         probe = await run_in_threadpool(prober.probe, dest)
         return {"ok": True, "file": fname, "size": total, "video_id": video_id, "probe": probe,
                 "warnings": codec_warnings(probe)}
@@ -753,6 +766,10 @@ def create_app(
     def backup_restore(body: dict = Body(default={})):
         body = body or {}
         return backup_mgr.restore(body.get("snapshot") or "latest", bool(body.get("media")))
+
+    @api.post("/notify/test")
+    def notify_test():
+        return {"result": notifier.test() if notifier is not None else "disabled"}
 
     @api.post("/backup/cancel")
     def backup_cancel():

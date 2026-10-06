@@ -129,3 +129,18 @@ To revoke access entirely (lost/stolen projector): on infmk1 empty
   into `/srv/theater-projektor`, and a shell on the Pi from a PC via
   `ssh -F tools/pi/ssh_config projektor-remote` (ProxyJump infmk1 → localhost:2222).
 - Web UI from anywhere: `ssh -F tools/pi/ssh_config -L 8080:localhost:8080 infmk1`, then http://localhost:8080/
+
+## Notifications
+
+Optional Discord messages (`app/src/projektor/notify.py`), configured in `[notify]` of `projektor.toml`
+(`discord_webhook` empty = off; `mention = "<@USERID>"` pings only that user on warning/error).
+Events: startup (version), crash detected (`data_dir/.running` marker left from the previous run), clean
+shutdown, unhandled exception in any thread, CPU over-temperature / recovery, undervoltage / throttling,
+LoRa adapter dropped / back. Each message carries device name, hostname and IP (from net.json).
+Delivery is best effort: bounded queue, 5 s HTTP timeout, per-event-type rate limit (`min_interval_s`),
+Discord 429 handling; undelivered events wait in `data_dir/.notify_outbox.jsonl` (max 200) and are retried
+with backoff and when net.json turns `connected`. Test: `POST /api/notify/test` or OSC `/proj/notify/test`.
+The webhook URL is a secret: keep it only in the device's `projektor.toml`, it is never logged.
+
+Instant backup: with `[backup] auto = true` a backup starts `auto_delay_s` after an upload, video
+rename/delete or show save; if infmk1 is unreachable it stays pending and retries (see ARCHITECTURE.md §6).

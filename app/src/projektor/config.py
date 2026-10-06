@@ -142,6 +142,17 @@ class BackupSettings(_Section):
     user: str = "projbackup"
     key: Path = Path("/var/lib/projektor/.ssh/id_backup")
     remote_dir: str = ""
+    auto: bool = True          # instant backup after uploads / show edits (debounced)
+    auto_delay_s: float = Field(10.0, ge=0)
+
+
+class NotifySettings(_Section):
+    """Discord notifications (notify.py); empty webhook = disabled."""
+    discord_webhook: str = ""
+    mention: str = ""          # e.g. "<@123456789>"; prefixed to warning/error messages
+    temp_warn_c: float = 75.0
+    temp_hysteresis_c: float = 5.0
+    min_interval_s: float = Field(30.0, ge=0)   # rate limit per event type
 
 
 class Settings(_Section):
@@ -153,6 +164,7 @@ class Settings(_Section):
     lora: LoraSettings = Field(default_factory=LoraSettings)
     web: WebSettings = Field(default_factory=WebSettings)
     backup: BackupSettings = Field(default_factory=BackupSettings)
+    notify: NotifySettings = Field(default_factory=NotifySettings)
     beamer: BeamerSettings = Field(default_factory=BeamerSettings)
 
     # Not read from TOML: where the settings came from, and whether we run in PC dev mode.

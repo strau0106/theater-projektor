@@ -118,9 +118,10 @@ def _dedup_key(address: str, args: list) -> tuple:
 
 class CommandDispatcher:
     def __init__(self, controller, settings: Settings, clock: Callable[[], float] = time.monotonic,
-                 beamer=None):
+                 beamer=None, notifier=None):
         from .beamer import Beamer
 
+        self.notifier = notifier
         self.beamer = beamer if beamer is not None else Beamer(settings)
         self.controller = controller
         self.settings = settings
@@ -144,6 +145,7 @@ class CommandDispatcher:
             "beamer/power": self._beamer_power,
             "beamer/status": self._beamer_status,
             "beamer/key": self._beamer_key,
+            "notify/test": self._notify_test,
         }
 
     # ------------------------------------------------------------------ dedup
@@ -255,6 +257,11 @@ class CommandDispatcher:
 
     def _ping(self, args: list) -> list[Reply]:
         return [("/proj/pong", [self.settings.device.name])]
+
+    def _notify_test(self, args: list) -> list[Reply]:
+        self._nargs(args, 0, 0, "/proj/notify/test")
+        n = self.notifier
+        return [("/proj/notify/test", [n.test() if n is not None else "disabled"])]
 
     def _state(self, args: list) -> list[Reply]:
         return [("/proj/state", [json.dumps(self.controller.state(), separators=(",", ":"))])]

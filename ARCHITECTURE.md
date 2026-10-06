@@ -219,6 +219,16 @@ port = 22
 user = "projbackup"
 key = "/var/lib/projektor/.ssh/id_backup"
 remote_dir = ""          # relative to rrsync root on server
+auto = true              # instant backup after uploads / show edits / file deletes
+auto_delay_s = 10        # debounce; bursts coalesce; failures retry 30 s .. 15 min and when net.json -> connected
+                         # (pending flag: data_dir/.backup_pending; never deletes remote files)
+
+[notify]                 # Discord webhook notifications (docs/infmk1.md "Notifications")
+discord_webhook = ""     # empty = disabled
+mention = ""             # e.g. "<@123456789>"; pings only that user on warning/error
+temp_warn_c = 75
+temp_hysteresis_c = 5
+min_interval_s = 30      # rate limit per event type
 ```
 
 ### Show — `show.json`

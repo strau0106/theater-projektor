@@ -104,7 +104,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .beamer import Beamer
 
     beamer = Beamer(settings)
-    dispatcher = CommandDispatcher(controller, settings, beamer=beamer)
+    from . import __version__, notify as notify_mod
+
+    prev_run = notify_mod.begin_run(settings.paths.data_dir)
+    notifier = notify_mod.Notifier(settings, version=__version__).start()
+    notifier.install_excepthooks()
+    notifier.startup(prev_run)
+    dispatcher = CommandDispatcher(controller, settings, beamer=beamer, notifier=notifier)
     loop = GLib.MainLoop()
 
     controller.start()
@@ -119,6 +125,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         controller.set_transport_status("osc", f"error: {e.strerror or e}")
 
     lora = _start_lora(settings, dispatcher, controller)
+    monitors = notify_mod.Monitors(notifier, settings, lora_status=getattr(lora, "status", None)).start()
     web_server, web_thread = _start_web(settings, controller, dispatcher, show_store, beamer)
 
     def beamer_boot() -> None:
@@ -155,6 +162,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     finally:
         if osc is not None:
             osc.stop()
+        monitors.stop()
         if lora is not None:
             try:
                 lora.stop()
@@ -170,6 +178,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         controller.shutdown()
         if web_thread is not None:
             web_thread.join(timeout=3)
+    notifier.shutdown(2.0)
+    notify_mod.end_run(settings.paths.data_dir)
     log.info("bye")
     return 0
 
