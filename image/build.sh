@@ -161,7 +161,8 @@ install -d -m 700 "${F}/secrets"
 # hash is filled in inside the chroot with the app's own hasher
 DEVICE_NAME="${DEVICE_NAME}" INFMK1_HOST="${INFMK1_HOST}" INFMK1_PORT="${INFMK1_PORT}" \
 TUNNEL_SSH_PORT="${TUNNEL_SSH_PORT}" TUNNEL_WEB_PORT="${TUNNEL_WEB_PORT}" WIFI_COUNTRY="${WIFI_COUNTRY}" \
-HOTSPOT_PASSWORD="${HOTSPOT_PASSWORD:-}" python3 - > "${F}/projektor.toml" <<'PY'
+HOTSPOT_PASSWORD="${HOTSPOT_PASSWORD:-}" DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}" \
+DISCORD_MENTION="${DISCORD_MENTION:-}" python3 - > "${F}/projektor.toml" <<'PY'
 import json, os
 e = os.environ
 s = lambda v: json.dumps(v, ensure_ascii=False)   # JSON strings are valid TOML basic strings
@@ -224,7 +225,11 @@ port = {int(e["INFMK1_PORT"])}
 user = "projtunnel"
 key = "/var/lib/projektor/.ssh/id_tunnel"
 remote_ssh_port = {int(e["TUNNEL_SSH_PORT"])}
-remote_web_port = {int(e["TUNNEL_WEB_PORT"])}""")
+remote_web_port = {int(e["TUNNEL_WEB_PORT"])}
+
+[notify]
+discord_webhook = {s(e.get("DISCORD_WEBHOOK_URL", ""))}
+mention = {s(e.get("DISCORD_MENTION", ""))}""")
 PY
 python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${F}/projektor.toml"
 

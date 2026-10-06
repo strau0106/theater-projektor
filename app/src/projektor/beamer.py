@@ -128,22 +128,29 @@ class Beamer:
                     time.sleep(self.retry_gap_s)
         if last is not None:
             raise last
+        self._sent_standby = False
         self._run("--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
 
     def standby(self) -> None:
         self._run("--to", TV, "--standby")
+        self._sent_standby = True
 
     def status(self) -> str:
-        """"on" | "standby" | "unknown" (no answer) | "unavailable" (no tool/device/disabled)."""
+        """"on" | "standby" | "off" | "unknown" | "unavailable" (no tool/device/disabled).
+
+        "off": no answer after our own standby command - some beamers (XGIMI Halo+) power
+        their CEC controller down completely and cannot be woken over CEC from that state."""
         try:
             out = self._run("--to", TV, "--give-device-power-status")
         except BeamerUnavailable:
             return "unavailable"
         except BeamerError as e:
-            return "unavailable" if "Failed to open" in str(e) else "unknown"
+            if "Failed to open" in str(e):
+                return "unavailable"
+            return "off" if getattr(self, "_sent_standby", False) else "unknown"
         m = _PWR_RE.search(out)
         if not m:
-            return "unknown"
+            return "off" if getattr(self, "_sent_standby", False) else "unknown"
         s = m.group(1).lower()
         if s in ("on", "to-on"):
             return "on"

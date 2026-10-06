@@ -122,3 +122,19 @@ def test_web(tmp_path):
     b.cec_ctl = str(tmp_path / "missing")
     assert c.get("/api/beamer").json()["status"] == "unavailable"
     assert c.post("/api/beamer/power", json={"on": True}).status_code == 502
+
+
+def test_status_off_after_standby_without_reply(tmp_path):
+    """XGIMI Halo+: after CEC standby the beamer no longer answers -> report "off", not "unknown"."""
+    from types import SimpleNamespace
+    from projektor.beamer import Beamer
+
+    tool = tmp_path / "cec-ctl"
+    tool.write_text("#!/bin/sh\ncase \"$*\" in *give-device-power-status*) echo 'Timeout'; exit 1;; esac\nexit 0\n")
+    tool.chmod(0o755)
+    b = Beamer(SimpleNamespace(beamer=SimpleNamespace(enabled=True, device="/dev/null", phys_addr="1.0.0.0",
+                                                      power_on_at_boot=False, standby_at_shutdown=False,
+                                                      cec_ctl=str(tool))))
+    assert b.status() == "unknown"
+    b.standby()
+    assert b.status() == "off"
