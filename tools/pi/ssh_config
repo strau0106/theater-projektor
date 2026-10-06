@@ -1,0 +1,10 @@
+# Test access to the bench Pi with a dedicated key (no password needed):
+#   ssh -F tools/pi/ssh_config projektor-test 'uptime'
+Host projektor-test
+    HostName projektor.local
+    User theater
+    IdentityFile ~/.ssh/projektor_test
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts_projektor
+    LogLevel ERROR

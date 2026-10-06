@@ -1,0 +1,44 @@
+#!/bin/sh
+# Bench helper installed on the test Pi as /usr/local/sbin/projektor-dev; the admin user may
+# run it via sudo without a password (sudoers.d/projektor-dev). Not part of the image.
+set -e
+SP=/opt/projektor/venv/lib/python3.13/site-packages
+pidof_app() { pgrep -u projektor -f "projektor run" | head -1; }
+case "$1" in
+  deploy)   # app sources from /tmp/projektor-src.tgz (tar of app/src/projektor)
+            tar -C "$SP" -xzf /tmp/projektor-src.tgz && rm -f /tmp/projektor-src.tgz
+            systemctl restart projektor && echo deployed ;;
+  restart|stop|start) systemctl "$1" projektor; echo "$1: $(systemctl is-active projektor)" ;;
+  snapshot) systemctl kill -s USR1 projektor; sleep 2; base64 -w0 /var/lib/projektor/snapshot.png ;;
+  stats)    P=$(pidof_app)
+            echo "pid=$P rss_kb=$(awk '/VmRSS/{print $2}' /proc/$P/status) fds=$(ls /proc/$P/fd | wc -l)" \
+                 "threads=$(ls /proc/$P/task | wc -l) cpu_ticks=$(awk '{print $14+$15}' /proc/$P/stat)" \
+                 "avail_kb=$(awk '/MemAvail/{print $2}' /proc/meminfo) shmem_kb=$(awk '/^Shmem:/{print $2}' /proc/meminfo)" \
+                 "cma_free_kb=$(awk '/CmaFree/{print $2}' /proc/meminfo) $(vcgencmd measure_temp) $(vcgencmd get_throttled)" \
+                 "restarts=$(systemctl show projektor -p NRestarts --value)" ;;
+  journal)  journalctl -u projektor --no-pager --since "${2:--5min}" ;;
+  setting)  # setting <section.key> <toml value>, e.g. setting player.preload false
+            python3 - "$2" "$3" <<'PY'
+import re, sys
+key, val = sys.argv[1], sys.argv[2]
+sec, k = key.split(".", 1)
+p = "/etc/projektor/projektor.toml"
+s = open(p).read()
+m = re.search(rf"^\[{re.escape(sec)}\]\s*$", s, re.M)
+if not m:
+    s = s.rstrip("\n") + f"\n\n[{sec}]\n{k} = {val}\n"
+else:
+    end = re.search(r"^\[", s[m.end():], re.M)
+    body_end = m.end() + (end.start() if end else len(s) - m.end())
+    body = s[m.end():body_end]
+    if re.search(rf"^{re.escape(k)}\s*=", body, re.M):
+        body = re.sub(rf"^{re.escape(k)}\s*=.*$", f"{k} = {val}", body, flags=re.M)
+    else:
+        body = f"\n{k} = {val}" + body
+    s = s[:m.end()] + body + s[body_end:]
+open(p, "w").write(s)
+print(f"{key} = {val}")
+PY
+            ;;
+  *) echo "usage: projektor-dev deploy|restart|stop|start|snapshot|stats|journal [since]|setting <sec.key> <val>" >&2; exit 2 ;;
+esac

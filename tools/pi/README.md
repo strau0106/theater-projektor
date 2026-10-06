@@ -23,3 +23,17 @@ Measurements Pi 4 1 GB, 1080p30 H.264 (v4l2h264dec), 2026-10-06:
 | avdec_h264 (software) → glimagesink | 294 % |
 | status layer 1080p30 BGRA textoverlay | 93 %, +310 MB shmem |
 | status layer 960x540@2 | 10 % |
+
+## Key-based access (preferred)
+
+`tools/pi/dev.sh` uses a dedicated key `~/.ssh/projektor_test` and a limited passwordless
+sudo helper on the Pi (`projektor-dev`: deploy, restart/stop/start, snapshot, stats, journal,
+setting), so no password from `secrets/` is needed. Host `projektor.local` (see `ssh_config`).
+
+One-time Pi setup (done on the bench Pi 2026-10-06):
+```
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/projektor_test
+# append ~/.ssh/projektor_test.pub to /home/theater/.ssh/authorized_keys on the Pi
+# install tools/pi/projektor-dev as /usr/local/sbin/projektor-dev (root, 755)
+# /etc/sudoers.d/projektor-dev:  theater ALL=(root) NOPASSWD: /usr/local/sbin/projektor-dev
+```
