@@ -1,8 +1,10 @@
 
 # ---------------------------------------------------------------- projektor
 # Appended by the theater-projektor image build (image/stage-projektor).
-# Display: full KMS (dtoverlay=vc4-kms-v3d above, with cma-512 for two 1080p
-# video pipelines + GL compositing). The KMS mode itself is forced in cmdline.txt
+# Display: full KMS (dtoverlay=vc4-kms-v3d above, with cma-256: scanout + decoder
+# buffers). Do NOT raise CMA/gpu_mem on 1 GB boards: GL (v3d) buffers live in normal
+# RAM, cma-512 + gpu_mem=256 left ~236 MB and the app was OOM-killed on a Pi 4 1 GB.
+# The KMS mode itself is forced in cmdline.txt
 # (video=HDMI-A-1:1920x1080@60D) so a beamer switched on after boot gets a picture.
 [all]
 # firmware stage: treat both HDMI ports as connected even without a display/EDID
@@ -17,8 +19,8 @@ dtparam=audio=off
 
 [pi4]
 dtoverlay=disable-bt
-# H.264 hardware decoder (bcm2835-codec) allocates from GPU memory
-gpu_mem=256
+# H.264 hardware decoder (bcm2835-codec) needs some firmware memory; 128 is plenty
+gpu_mem=128
 
 [pi5]
 dtoverlay=disable-bt-pi5

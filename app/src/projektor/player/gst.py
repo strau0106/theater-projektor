@@ -57,6 +57,7 @@ _POS_POLL_MS = 50
 # in which case videoconvert falls back to a CPU conversion (or negotiation fails) - verify
 # on hardware and add a dedicated conversion path if needed.
 _CLIP_FORMATS = "{ I420, NV12, YV12, BGRA, RGBA, BGRx, RGBx }"
+STATUS_FPS = 2  # status text refreshes once per second
 _MAX_U64 = 2**64 - 1
 
 
@@ -101,30 +102,36 @@ class _Display:
         self.status_visible = False
         self.status_text = ""
 
-    def _font(self) -> str:
+    @staticmethod
+    def _textprops(w: int, h: int) -> str:
         # ~ 20 lines fit on screen
-        size = max(10, int(self.height / 26))
-        return f"DejaVu Sans Mono Bold {size}"
+        size = max(8, int(h / 26))
+        return (
+            f'font-desc="DejaVu Sans Mono Bold {size}" valignment=top halignment=left line-alignment=left '
+            f"xpad={int(w * 0.04)} ypad={int(h * 0.05)} auto-resize=false shaded-background=false "
+            f"draw-shadow=false wait-text=false"
+        )
 
     def build(self) -> None:
         W, H, F = self.width, self.height, self.fps
-        textprops = (
-            f'font-desc="{self._font()}" valignment=top halignment=left line-alignment=left '
-            f"xpad={int(W * 0.04)} ypad={int(H * 0.05)} auto-resize=false shaded-background=false "
-            f"draw-shadow=false wait-text=false"
-        )
+        textprops = self._textprops(W, H)
         if self.gl:
+            SW, SH = max(2, W // 2 // 2 * 2), max(2, H // 2 // 2 * 2)
             if self.kind == "glfakesink":
                 sink = "gldownload ! videoconvert ! fakesink name=out sync=true enable-last-sample=true"
             else:
-                sink = "glimagesink name=out force-aspect-ratio=true enable-last-sample=true"
+                # sync=false: the live mixer already paces output at the display framerate; a
+                # synced sink drops "late" frames on a Pi 4 (cross-pipeline handoff latency)
+                sink = "glimagesink name=out force-aspect-ratio=true enable-last-sample=true sync=false"
             desc = (
                 f"glvideomixer name=mix background=black "
                 f"! video/x-raw(memory:GLMemory),width={W},height={H},framerate={F}/1 ! {sink} "
-                # status layer; the valve stops the CPU work while the status screen is hidden
+                # status layer; the valve stops the CPU work while the status screen is hidden.
+                # Rendered at half resolution and STATUS_FPS, the mixer scales it up: a
+                # full-res 30 fps CPU text layer costs ~90 % CPU and ~300 MB on a Pi 4.
                 f"videotestsrc pattern=black is-live=true "
-                f"! video/x-raw,format=BGRA,width={W},height={H},framerate={F}/1 "
-                f"! valve name=svalve drop=false ! textoverlay name=stext {textprops} "
+                f"! video/x-raw,format=BGRA,width={SW},height={SH},framerate={STATUS_FPS}/1 "
+                f"! valve name=svalve drop=false ! textoverlay name=stext {self._textprops(SW, SH)} "
                 f"! queue max-size-buffers=3 ! mix.sink_0 "
                 f"intervideosrc name=vsrc channel={self.channel} timeout={_MAX_U64} "
                 f"! queue max-size-buffers=3 ! mix.sink_1 "

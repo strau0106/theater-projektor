@@ -35,7 +35,7 @@ BOOT="${ROOTFS_DIR}/boot/firmware"
 CFG="${BOOT}/config.txt"
 if ! grep -q -- '-- projektor' "${CFG}"; then
 	# more CMA for 1080p GL video (two decoders during cross fades)
-	sed -i -E 's/^dtoverlay=vc4-kms-v3d$/dtoverlay=vc4-kms-v3d,cma-512/' "${CFG}"
+	sed -i -E 's/^dtoverlay=vc4-kms-v3d$/dtoverlay=vc4-kms-v3d,cma-256/' "${CFG}"
 	# no camera / DSI display probing: HDMI-A-1 is the only output
 	sed -i -E 's/^camera_auto_detect=1/camera_auto_detect=0/; s/^display_auto_detect=1/display_auto_detect=0/' "${CFG}"
 	cat "${S}/boot/config-projektor.txt" >> "${CFG}"
