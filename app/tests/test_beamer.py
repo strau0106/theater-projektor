@@ -33,6 +33,7 @@ def mk(tmp_path, **kw):
     script, log = fake_cec(tmp_path, **kw)
     b = Beamer(SimpleNamespace(beamer=SimpleNamespace(cec_ctl=str(script))))
     b.retry_gap_s = 0
+    b.ensure_registered = lambda: setattr(b, "_from", [])
     b.wait_on_s = 0
     return b, log
 
@@ -43,7 +44,7 @@ def lines(log):
 
 def test_commands(tmp_path):
     b, log = mk(tmp_path)
-    b.ensure_registered = lambda: None
+    b.ensure_registered = lambda: setattr(b, "_from", [])
     b.wait_on_s = 0
     b.setup()
     b.power_on()
@@ -160,11 +161,8 @@ exit 0
     b = Beamer(SimpleNamespace(beamer=SimpleNamespace(enabled=True, device="/dev/null", phys_addr="1.0.0.0",
                                                       power_on_at_boot=False, standby_at_shutdown=False,
                                                       cec_ctl=str(tool))))
-    b.register_wait_s = 0
     b.wait_on_s = 0
     b.retry_gap_s = 0
     b.power_on()
     ls = log.read_text().splitlines()
-    i_setup = ls.index("-d /dev/null -p 1.0.0.0 --playback -o Projektor")
-    i_wake = ls.index("-d /dev/null --to 0 --image-view-on")
-    assert i_setup < i_wake
+    assert "-d /dev/null --from 4 --to 0 --image-view-on" in ls

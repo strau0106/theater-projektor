@@ -19,6 +19,7 @@ from typing import Any, Callable
 from . import ProjektorError
 
 log = logging.getLogger(__name__)
+PLAYBACK_LA = "4"  # Playback Device 1
 
 TV = "0"          # logical address of the TV/beamer
 BROADCAST = "15"
@@ -112,20 +113,24 @@ class Beamer:
         self._run(*args, "--playback", "-o", "Projektor")
 
     def ensure_registered(self) -> None:
-        """Re-register if the adapter lost its address.
+        """Pick the sender address for the next commands.
 
-        When the beamer sleeps, the Pi's CEC adapter drops to physical address f.f.f.f with
-        no logical address; commands then go out from "Unregistered" (15) and the XGIMI
-        ignores <Image View On>. Re-claiming Playback (4) first makes the wake work."""
+        When the beamer sleeps it drops HDMI hotplug and the kernel resets the Pi's CEC
+        adapter to physical address f.f.f.f with no logical address (re-registering does
+        not stick). Commands then go out from "Unregistered" (15), which the XGIMI ignores.
+        Sending explicitly from Playback Device 1 (`--from 4`) wakes it (verified)."""
         try:
             out = self._run()
         except BeamerError:
             out = ""
         m = _PHYS_RE.search(out)
-        if m is None or m.group(1).lower() == "f.f.f.f" or "Logical Address Mask       : 0x0000" in out:
-            log.info("beamer: CEC adapter unregistered, re-registering as playback device")
-            self.setup()
-            time.sleep(self.register_wait_s)
+        lost = m is None or m.group(1).lower() == "f.f.f.f" or "Logical Address Mask       : 0x0000" in out
+        if lost:
+            try:
+                self.setup()  # harmless; sticks if hotplug is up
+            except BeamerError:
+                pass
+        self._from = ["--from", PLAYBACK_LA] if lost else []
 
     def _our_phys_addr(self) -> str:
         if self.phys_addr:
@@ -140,7 +145,7 @@ class Beamer:
         last: BeamerError | None = None
         for i in range(3):  # CEC from standby can be slow
             try:
-                self._run("--to", TV, "--image-view-on")
+                self._run(*self._from, "--to", TV, "--image-view-on")
                 last = None
                 break
             except BeamerError as e:
@@ -154,7 +159,7 @@ class Beamer:
         # an early <Active Source>, so repeat it once it reports power "on".
         if self.retry_gap_s > 0:
             time.sleep(self.retry_gap_s)  # spec: give the TV time between the two messages
-        active = ("--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
+        active = (*self._from, "--to", BROADCAST, "--active-source", f"phys-addr={self._our_phys_addr()}")
         self._run(*active)
         deadline = time.monotonic() + self.wait_on_s
         while time.monotonic() < deadline:
@@ -169,10 +174,10 @@ class Beamer:
         if self.off_method == "power-key":
             # Like the remote's power button: XGIMI Halo+ goes to sleep (LED on) instead of
             # the full shutdown <Standby> triggers. Neither state can be woken over CEC.
-            self._run("--to", TV, "--user-control-pressed", "ui-cmd=power-toggle-function")
-            self._run("--to", TV, "--user-control-released")
+            self._run(*self._from, "--to", TV, "--user-control-pressed", "ui-cmd=power-toggle-function")
+            self._run(*self._from, "--to", TV, "--user-control-released")
         else:
-            self._run("--to", TV, "--standby")
+            self._run(*self._from, "--to", TV, "--standby")
         self._sent_standby = True
 
     def status(self) -> str:
@@ -181,7 +186,7 @@ class Beamer:
         "off": no answer after our own standby command - some beamers (XGIMI Halo+) power
         their CEC controller down completely and cannot be woken over CEC from that state."""
         try:
-            out = self._run("--to", TV, "--give-device-power-status")
+            out = self._run(*getattr(self, "_from", []), "--to", TV, "--give-device-power-status")
         except BeamerUnavailable:
             return "unavailable"
         except BeamerError as e:
