@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "projektor"
+version = "0.1.0"
+description = "Battery-powered wireless theatre projector: video playback controlled via OSC / LoRa"
+requires-python = ">=3.11"
+dependencies = [
+    "python-osc>=1.8",
+    "pyserial>=3.5",
+    "pydantic>=2.5",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+]
+# PyGObject (gi) + GStreamer come from the system (apt), venv uses --system-site-packages.
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+projektor = "projektor.__main__:main"
+projektor-bridge = "projektor.bridge:main"
+projektor-lora-config = "projektor.waveshare:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+projektor = ["web/static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

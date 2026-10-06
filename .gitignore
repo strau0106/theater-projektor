@@ -1,0 +1,9 @@
+secrets/
+image/work/
+image/deploy/
+app/.venv/
+app/devdata/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
