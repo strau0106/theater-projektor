@@ -215,3 +215,24 @@ The Waveshare documentation is thin. Verify these with the first real adapter an
 - [E] CEPT ERC Recommendation 70-03, Annex 1 (non-specific SRD, bands h1.3–h1.7) and ETSI EN 300 220-2:
   <https://docdb.cept.org/document/845>
 - LoRaWAN Regional Parameters RP002 (EU868 channel plan, for comparison): <https://lora-alliance.org/wp-content/uploads/2019/11/rp_2-1.0.0_final_release.pdf>
+
+## Hardware test results (2026-10-06, 2× USB-TO-LoRa-HF, firmware Ver1.2)
+
+Tested PC (bridge) ↔ Pi 4 (projektor), same room, factory settings left as found:
+
+- Both adapters answered `AT+ALLP?` with `+ALLP=7,0,1,10,0,0,1,18,18,0,0,1,"8N1",115200,0`,
+  i.e. SF7, `AT+BW` uses the **index** style (`+BW=0` = 125 kHz), CR 4/5, **10 dBm**, net 0,
+  LBT off, stream mode, TX/RX channel 18 (868 MHz), RSSI off, addr 0, 115200 8N1.
+  The answer format is `\r\n+KEY=value\r\n\r\nOK`; `+++` itself gives no answer when the
+  module is already idle. No `--apply` was needed for the link to work.
+- Commands: 100 % delivered; one-way latency ≈ 90 ms (`/proj/ping` RTT 178 ms with a single copy).
+- **Half duplex pitfall (fixed):** with `--repeat 2` the Pi's immediate reply collided with the
+  bridge's second copy and was lost (0/5 pongs). The Pi now delays LoRa replies by
+  `lora.reply_delay_ms` (250) + airtime × (`lora.sender_repeat` − 1) × 2 → 10/10 pongs,
+  RTT ≈ 560 ms. Commands themselves are executed immediately.
+- WiFi + LoRa in parallel (`--wifi-target`): WiFi copy arrives first, LoRa copy is dropped by the
+  cross-transport dedup ("dedup: dropped ... from lora").
+- Not yet tested: range on stage, behaviour with the beamer/powerbank nearby, `--apply` of the
+  "projektor" profile (not required while both adapters keep identical factory settings).
+- Pitfall: never run `projektor-lora-config` on the Pi while the `projektor` service runs — both
+  open the same serial port and the AT answers get mixed up. `sudo systemctl stop projektor` first.

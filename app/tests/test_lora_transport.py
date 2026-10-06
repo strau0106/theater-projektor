@@ -201,3 +201,24 @@ def test_reconnect_after_unplug(tmp_path):
             p2.close()
     finally:
         h.stop()
+
+
+def test_reply_waits_for_sender_repeats():
+    """Half duplex: the reply must not go out while the sender's other copies are on air."""
+    from projektor import lora_proto as lp
+    from projektor.transport.lora import LoraTransport
+
+    s = settings("/nonexistent", enabled=False)
+    s.lora.reply_delay_ms = 200
+    s.lora.sender_repeat = 2
+    tr = LoraTransport(s, FakeDispatcher())
+    sent = []
+    tr.link = SimpleNamespace(write=lambda wire: sent.append((time.monotonic(), wire)) or True)
+    t0 = time.monotonic()
+    tr._on_frame(lp.decode_frame(lp.encode_frame(1234, lp.build_osc("/proj/ping"))))
+    assert sent == []  # not immediately
+    assert wait_for(lambda: sent, timeout=3.0)
+    delay = sent[0][0] - t0
+    assert delay >= 0.2 + 2 * lp.frame_airtime_s(25) - 0.02
+    frame = lp.decode_frame(sent[0][1])
+    assert frame.is_reply and lp.parse_osc(frame.payload) == [("/proj/pong", ["projektor"])]

@@ -228,6 +228,8 @@ class LoraTransport:
         self.enabled = bool(getattr(lora, "enabled", False))
         self.pattern = str(getattr(lora, "device", "") or "")
         self.baud = int(getattr(lora, "baud", 115200) or 115200)
+        self.reply_delay_s = int(getattr(lora, "reply_delay_ms", 250)) / 1000.0
+        self.sender_repeat = max(1, int(getattr(lora, "sender_repeat", 2)))
         self.decoder = lp.FrameDecoder(on_error=lambda m: log.debug("lora: dropped frame: %s", m))
         self.dedup = lp.SeqDedup(dedup_window_s)
         self.seq = lp.SeqCounter()
@@ -281,8 +283,21 @@ class LoraTransport:
             except Exception:
                 log.exception("lora: dispatcher failed for %s", address)
                 continue
+            if not replies:
+                continue
+            # Half duplex: wait until the sender's remaining copies of this frame are off air.
+            wire_len = len(lp.encode_frame(frame.seq, frame.payload))
+            delay = self.reply_delay_s + (self.sender_repeat - 1) * 2 * lp.frame_airtime_s(wire_len)
             for r_addr, r_args in replies:
-                self.send_reply(r_addr, list(r_args))
+                self._send_reply_later(delay, r_addr, list(r_args))
+
+    def _send_reply_later(self, delay_s: float, address: str, args: list) -> None:
+        if delay_s <= 0:
+            self.send_reply(address, args)
+            return
+        t = threading.Timer(delay_s, self.send_reply, (address, args))
+        t.daemon = True
+        t.start()
 
     def send_reply(self, address: str, args: list) -> bool:
         """Send one reply over LoRa (best effort, once). Oversized replies are dropped."""

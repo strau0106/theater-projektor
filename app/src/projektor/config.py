@@ -81,6 +81,11 @@ class LoraSettings(_Section):
     enabled: bool = True
     device: str = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_*"
     baud: int = 115200
+    # LoRa is half duplex: the bridge sends each command `repeat` times, a reply sent while
+    # the other copies are still on air is lost. Replies wait this long plus the airtime of
+    # the received frame (x repeats) before going out.
+    reply_delay_ms: int = Field(250, ge=0, le=5000)
+    sender_repeat: int = Field(2, ge=1, le=5)
 
 
 class WebSettings(_Section):
