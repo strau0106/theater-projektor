@@ -119,7 +119,7 @@ Process model inside `projektor run`:
   `display.fade_curve` (`linear | scurve` (default, smoothstep) `| perceptual` (t^2.2)), overridable
   per video/cue (`fade_curve`); fade-out is the mirrored curve (`player/base.py: fade_value`).
   kms/CPU path or no GstController: 16 ms timer applying the same curve.
-  Preloading the standby cue (`[player] preload = true`, GL mode only): `Player.prepare(clip)` builds
+  Preloading the standby cue (`[player] preload = "auto"` = on with ≥ 1.5 GB RAM, GL mode only): `Player.prepare(clip)` builds
   ONE extra clip pipeline prerolled to PAUSED at its start frame (accurate seek), not connected to
   the display (its handoff is ignored, the sink keeps the preroll sample). `play(clip)` with an equal
   clip (file, start, in/out, pause points, end, fades) promotes it: old pipeline torn down, preroll frame
@@ -191,7 +191,7 @@ height = 1080
 fade_curve = "scurve"    # linear | scurve | perceptual (per video/cue override: "fade_curve")
 
 [player]
-preload = true           # preroll the standby cue (second decoder; set false on memory pressure)
+preload = "auto"         # preroll standby cue; auto = only with >= 1.5 GB RAM (1 GB Pi: CMA too tight)
 
 [osc]
 port = 9000
