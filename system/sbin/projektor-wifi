@@ -1,0 +1,684 @@
+#!/usr/bin/python3
+"""projektor-wifi - WiFi manager for the theatre projector (ARCHITECTURE.md §9).
+
+Runs as root. Uses NetworkManager through `nmcli`. Python stdlib only.
+
+    projektor-wifi daemon                    manager loop (projektor-wifi.service)
+    projektor-wifi import                    import /boot/firmware/projektor-wifi.txt now
+    projektor-wifi list                      known networks              (JSON)
+    projektor-wifi add <ssid> <psk> [prio]   add / replace a network     (JSON, psk "" = open)
+    projektor-wifi remove <ssid>             forget a network            (JSON)
+    projektor-wifi scan                      visible networks            (JSON)
+    projektor-wifi retry                     daemon: leave hotspot, retry now (JSON)
+    projektor-wifi status                    current net.json            (JSON)
+
+Daemon behaviour:
+  * known networks = NetworkManager wifi profiles (infrastructure mode), ordered by
+    connection.autoconnect-priority (higher first)
+  * while not connected: one connection attempt every `retry_interval_s` (15 s),
+    visible known networks first, round robin by priority
+  * after `hotspot_after_attempts` failed attempts (immediately when no network is
+    configured at all): access point "projektor-<last 4 hex of MAC>", WPA2,
+    10.42.0.1/24 (ipv4.method shared -> DHCP/DNS by NetworkManager's dnsmasq)
+  * in hotspot mode every `hotspot_rescan_s`: drop the hotspot, scan, try visible
+    known networks, else bring the hotspot back
+  * /run/projektor/net.json is rewritten (atomically) every second
+
+Settings: [wifi] section of /etc/projektor/projektor.toml (all keys optional):
+    country = "DE"  interface = "wlan0"  retry_interval_s = 15
+    hotspot_after_attempts = 8  hotspot_rescan_s = 300  hotspot_password = "..."
+"""
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+
+CONFIG_PATH = os.environ.get("PROJEKTOR_CONFIG", "/etc/projektor/projektor.toml")
+BOOT_FILE = os.environ.get("PROJEKTOR_WIFI_FILE", "/boot/firmware/projektor-wifi.txt")
+RUN_DIR = os.environ.get("PROJEKTOR_RUN_DIR", "/run/projektor")
+TRIGGER_FILE = os.path.join(RUN_DIR, "wifi-retry")
+HOTSPOT_CON = "projektor-hotspot"
+CON_PREFIX = "wifi-"
+HOTSPOT_IP = "10.42.0.1"
+NM_BUSY_MAX_S = 45          # let NetworkManager's own autoconnect run this long before we step in
+ATTEMPT_WAIT_S = 25         # nmcli --wait for one activation
+MAX_STATION_SKIPS = 3       # postpone hotspot rescan while clients are connected, at most this often
+
+DEFAULTS = {
+    "country": "DE",
+    "interface": "wlan0",
+    "retry_interval_s": 15,
+    "hotspot_after_attempts": 8,
+    "hotspot_rescan_s": 300,
+    "hotspot_password": "",
+}
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+class WifiError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- settings
+
+
+class Config:
+    def __init__(self, path: str = CONFIG_PATH):
+        self.path = path
+        self.mtime = None
+        self.wifi = dict(DEFAULTS)
+        self.net_status = os.path.join(RUN_DIR, "net.json")
+        self.reload(force=True)
+
+    def reload(self, force: bool = False) -> None:
+        try:
+            mtime = os.stat(self.path).st_mtime
+        except OSError:
+            mtime = None
+        if not force and mtime == self.mtime:
+            return
+        self.mtime = mtime
+        data = {}
+        if mtime is not None:
+            try:
+                with open(self.path, "rb") as f:
+                    data = tomllib.load(f)
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                log(f"config: cannot read {self.path}: {e} (using defaults)")
+        wifi = dict(DEFAULTS)
+        for k, v in (data.get("wifi") or {}).items():
+            if k in DEFAULTS and isinstance(v, type(DEFAULTS[k])):
+                wifi[k] = v
+        wifi["retry_interval_s"] = max(5, int(wifi["retry_interval_s"]))
+        wifi["hotspot_after_attempts"] = max(1, int(wifi["hotspot_after_attempts"]))
+        wifi["hotspot_rescan_s"] = max(60, int(wifi["hotspot_rescan_s"]))
+        self.wifi = wifi
+        self.net_status = str((data.get("paths") or {}).get("net_status") or os.path.join(RUN_DIR, "net.json"))
+
+    def __getitem__(self, key):
+        return self.wifi[key]
+
+
+# ---------------------------------------------------------------- nmcli helpers
+
+
+def run(argv: list[str], timeout: float = 30, check: bool = True) -> subprocess.CompletedProcess:
+    env = dict(os.environ, LC_ALL="C", LANG="C")
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env,
+                           stdin=subprocess.DEVNULL)
+    except FileNotFoundError as e:
+        raise WifiError(f"{argv[0]} not found") from e
+    except subprocess.TimeoutExpired as e:
+        raise WifiError(f"{' '.join(argv[:3])}: timeout") from e
+    if check and p.returncode != 0:
+        raise WifiError((p.stderr or p.stdout).strip().replace("\n", " ") or f"{argv[0]} exit {p.returncode}")
+    return p
+
+
+def nmcli(*args: str, timeout: float = 30, check: bool = True) -> str:
+    return run(["nmcli", *args], timeout=timeout, check=check).stdout
+
+
+def split_terse(line: str, maxsplit: int = -1) -> list[str]:
+    """Split one `nmcli -t` line on unescaped ':' and unescape '\\:' / '\\\\'."""
+    out, cur, i = [], [], 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and i + 1 < len(line):
+            cur.append(line[i + 1])
+            i += 2
+            continue
+        if c == ":" and (maxsplit < 0 or len(out) < maxsplit):
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
+def con_props(ident: str, fields: list[str]) -> dict:
+    out = nmcli("-t", "-f", ",".join(fields), "connection", "show", "uuid", ident)
+    props = {}
+    for line in out.splitlines():
+        if ":" in line:
+            k, v = split_terse(line, 1)
+            props[k] = v
+    return props
+
+
+def known_networks() -> list[dict]:
+    """Infrastructure wifi profiles, highest priority first."""
+    nets = []
+    for line in nmcli("-t", "-f", "NAME,UUID,TYPE", "connection", "show").splitlines():
+        parts = split_terse(line)
+        if len(parts) != 3 or parts[2] != "802-11-wireless":
+            continue
+        name, uuid, _ = parts
+        if name == HOTSPOT_CON:
+            continue
+        try:
+            p = con_props(uuid, ["802-11-wireless.ssid", "802-11-wireless.mode", "connection.autoconnect-priority"])
+        except WifiError:
+            continue
+        if p.get("802-11-wireless.mode") == "ap":
+            continue
+        try:
+            prio = int(p.get("connection.autoconnect-priority") or 0)
+        except ValueError:
+            prio = 0
+        nets.append({"ssid": p.get("802-11-wireless.ssid", ""), "priority": prio, "name": name, "uuid": uuid})
+    nets.sort(key=lambda n: (-n["priority"], n["ssid"]))
+    return nets
+
+
+def wifi_device(cfg: Config) -> dict | None:
+    """{'device','state','connection'} of the configured wifi interface (or first wifi device)."""
+    found = None
+    for line in nmcli("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status").splitlines():
+        parts = split_terse(line)
+        if len(parts) != 4 or parts[1] != "wifi":
+            continue
+        dev = {"device": parts[0], "state": parts[2], "connection": parts[3]}
+        if parts[0] == cfg["interface"]:
+            return dev
+        found = found or dev
+    return found
+
+
+def device_ip(dev: str) -> str:
+    try:
+        out = nmcli("-t", "-f", "IP4.ADDRESS", "device", "show", dev)
+    except WifiError:
+        return ""
+    for line in out.splitlines():
+        _, _, v = line.partition(":")
+        if v:
+            return v.split("/")[0]
+    return ""
+
+
+def active_ssid(dev: str) -> str:
+    try:
+        out = nmcli("-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "ifname", dev, "--rescan", "no")
+    except WifiError:
+        return ""
+    for line in out.splitlines():
+        parts = split_terse(line, 1)
+        if len(parts) == 2 and parts[0] == "yes":
+            return parts[1]
+    return ""
+
+
+def scan(dev: str | None, rescan: bool = True) -> list[dict]:
+    """Visible networks, strongest entry per SSID."""
+    base = ["-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"]
+    if dev:
+        base += ["ifname", dev]
+    out = None
+    if rescan:
+        try:
+            out = nmcli(*base, "--rescan", "yes", timeout=40)
+        except WifiError as e:
+            log(f"scan: rescan failed ({e}), using cached results")
+    if out is None:
+        out = nmcli(*base, "--rescan", "no", timeout=20)
+    best: dict[str, dict] = {}
+    for line in out.splitlines():
+        parts = split_terse(line)
+        if len(parts) != 3 or not parts[0]:
+            continue
+        ssid, sig, sec = parts
+        try:
+            sig_i = int(sig)
+        except ValueError:
+            sig_i = 0
+        if ssid not in best or sig_i > best[ssid]["signal"]:
+            best[ssid] = {"ssid": ssid, "signal": sig_i, "security": sec.strip()}
+    return sorted(best.values(), key=lambda n: -n["signal"])
+
+
+def validate_psk(psk: str) -> None:
+    if psk == "":
+        return
+    if len(psk) == 64 and re.fullmatch(r"[0-9a-fA-F]{64}", psk):
+        return
+    if not 8 <= len(psk) <= 63:
+        raise WifiError("WPA password must be 8..63 characters (or empty for an open network)")
+
+
+def add_network(cfg: Config, ssid: str, psk: str, prio: int = 0) -> dict:
+    if not ssid or len(ssid.encode()) > 32:
+        raise WifiError("SSID must be 1..32 bytes")
+    validate_psk(psk)
+    for n in known_networks():
+        if n["ssid"] == ssid:
+            nmcli("connection", "delete", "uuid", n["uuid"])
+    args = ["connection", "add", "type", "wifi", "con-name", CON_PREFIX + ssid,
+            "ifname", cfg["interface"], "ssid", ssid,
+            "connection.autoconnect", "yes", "connection.autoconnect-priority", str(int(prio)),
+            "802-11-wireless.mode", "infrastructure"]
+    if psk:
+        args += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk]
+    nmcli(*args)
+    return {"ok": True, "ssid": ssid, "priority": int(prio)}
+
+
+def remove_network(ssid: str) -> dict:
+    hits = [n for n in known_networks() if n["ssid"] == ssid]
+    if not hits:
+        raise WifiError(f"unknown network: {ssid}")
+    for n in hits:
+        nmcli("connection", "delete", "uuid", n["uuid"])
+    return {"ok": True, "ssid": ssid, "removed": len(hits)}
+
+
+# ---------------------------------------------------------------- boot file import
+
+
+def parse_wifi_line(line: str):
+    """`ssid;psk;priority` (psk may be empty, priority optional). Returns (ssid, psk, prio) or None."""
+    line = line.strip().lstrip("﻿")
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split(";")
+    prio = 0
+    if len(parts) >= 3 and re.fullmatch(r"\s*(-?\d+)?\s*", parts[-1]):
+        prio = int(parts[-1]) if parts[-1].strip() else 0
+        parts = parts[:-1]
+    ssid = parts[0].strip()
+    psk = ";".join(parts[1:])
+    return (ssid, psk, prio) if ssid else None
+
+
+def import_boot_file(cfg: Config) -> int:
+    if not os.path.exists(BOOT_FILE):
+        return 0
+    try:
+        with open(BOOT_FILE, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        log(f"import: cannot read {BOOT_FILE}: {e}")
+        return 0
+    entries = [e for e in (parse_wifi_line(l) for l in lines) if e]
+    if not entries:
+        log(f"import: {BOOT_FILE} has no entries, leaving it in place")
+        return 0
+    count = 0
+    for ssid, psk, prio in entries:
+        try:
+            add_network(cfg, ssid, psk, prio)
+            count += 1
+            log(f"import: added network '{ssid}' (priority {prio})")
+        except WifiError as e:
+            log(f"import: skipping '{ssid}': {e}")
+    try:
+        os.replace(BOOT_FILE, BOOT_FILE + ".imported")
+        os.sync()
+    except OSError as e:
+        log(f"import: cannot rename {BOOT_FILE}: {e}")
+    return count
+
+
+# ---------------------------------------------------------------- hotspot
+
+
+def mac_suffix(dev: str) -> str:
+    try:
+        with open(f"/sys/class/net/{dev}/address") as f:
+            mac = f.read().strip().replace(":", "").lower()
+        return mac[-4:] or "0000"
+    except OSError:
+        return "0000"
+
+
+def hotspot_ssid(cfg: Config, dev: str) -> str:
+    return f"projektor-{mac_suffix(dev)}"
+
+
+def hotspot_password(cfg: Config, dev: str) -> str:
+    pw = cfg["hotspot_password"]
+    if 8 <= len(pw) <= 63:
+        return pw
+    fallback = f"projektor-{mac_suffix(dev)}"
+    log(f"hotspot: hotspot_password missing/invalid (8..63 chars), using fallback '{fallback}'")
+    return fallback
+
+
+def hotspot_up(cfg: Config, dev: str) -> bool:
+    ssid = hotspot_ssid(cfg, dev)
+    nmcli("connection", "delete", "id", HOTSPOT_CON, check=False)
+    try:
+        nmcli("connection", "add", "type", "wifi", "con-name", HOTSPOT_CON, "ifname", dev, "ssid", ssid,
+              "connection.autoconnect", "no",
+              "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg", "802-11-wireless.channel", "6",
+              "ipv4.method", "shared", "ipv4.addresses", f"{HOTSPOT_IP}/24",
+              "ipv6.method", "disabled",
+              "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn",
+              "wifi-sec.pairwise", "ccmp", "wifi-sec.group", "ccmp",
+              "wifi-sec.psk", hotspot_password(cfg, dev))
+        nmcli("--wait", "30", "connection", "up", "id", HOTSPOT_CON, timeout=40)
+        log(f"hotspot: up, ssid '{ssid}', ip {HOTSPOT_IP}")
+        return True
+    except WifiError as e:
+        log(f"hotspot: failed to start: {e}")
+        return False
+
+
+def hotspot_down() -> None:
+    nmcli("connection", "down", "id", HOTSPOT_CON, check=False, timeout=20)
+
+
+def hotspot_has_clients(dev: str) -> bool:
+    try:
+        return "Station" in run(["iw", "dev", dev, "station", "dump"], timeout=5).stdout
+    except WifiError:
+        return False
+
+
+# ---------------------------------------------------------------- misc system
+
+
+def set_country(cfg: Config) -> None:
+    cc = str(cfg["country"]).upper()
+    if not re.fullmatch(r"[A-Z]{2}", cc):
+        return
+    try:
+        run(["iw", "reg", "set", cc], timeout=5)
+    except WifiError as e:
+        log(f"country: iw reg set {cc} failed: {e}")
+    try:
+        run(["rfkill", "unblock", "wifi"], timeout=5, check=False)
+    except WifiError:
+        pass  # rfkill not installed; NetworkManager unblocks below
+    nmcli("radio", "wifi", "on", check=False)
+
+
+def write_json_atomic(path: str, data: dict) -> None:
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------- daemon
+
+
+class Daemon:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.attempt = 0
+        self.rr = 0                     # round robin index among candidates
+        self.next_attempt = time.monotonic() + 5   # give NetworkManager's autoconnect a head start
+        self.nm_busy_since = None
+        self.next_rescan = None
+        self.station_skips = 0
+        self.last_state = None
+        self.status = {}
+        self.last_try = ""            # SSID of the last attempt (shown while waiting)
+
+    def write(self, state: str, **kw) -> None:
+        dev = kw.pop("dev", None) or self.cfg["interface"]
+        data = {"state": state, "ssid": kw.get("ssid", ""), "ip": kw.get("ip", ""),
+                "attempt": self.attempt, "next_retry_s": int(max(0, kw.get("next_retry_s", 0))),
+                "hotspot_ssid": hotspot_ssid(self.cfg, dev),
+                "hotspot_ip": HOTSPOT_IP if state == "hotspot" else "",
+                "updated": int(time.time())}
+        if "error" in kw:
+            data["error"] = kw["error"]
+        if "known" in kw:
+            data["known"] = kw["known"]
+        if state != self.last_state:
+            log(f"state: {state} {data['ssid']} {data['ip']}".rstrip())
+            self.last_state = state
+        self.status = data
+        try:
+            write_json_atomic(self.cfg.net_status, data)
+        except OSError as e:
+            log(f"cannot write {self.cfg.net_status}: {e}")
+
+    def consume_trigger(self) -> bool:
+        try:
+            os.unlink(TRIGGER_FILE)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def attempt_connect(self, dev: str, net: dict) -> bool:
+        log(f"attempt {self.attempt}: connecting to '{net['ssid']}'")
+        try:
+            nmcli("--wait", str(ATTEMPT_WAIT_S), "connection", "up", "uuid", net["uuid"], "ifname", dev,
+                  timeout=ATTEMPT_WAIT_S + 10)
+            return True
+        except WifiError as e:
+            log(f"attempt {self.attempt}: '{net['ssid']}' failed: {e}")
+            return False
+
+    def candidates(self, dev: str, rescan: bool = True) -> tuple[list[dict], list[dict]]:
+        known = known_networks()
+        if not known:
+            return known, []
+        try:
+            visible = {n["ssid"] for n in scan(dev, rescan=rescan)}
+        except WifiError:
+            visible = set()
+        vis = [n for n in known if n["ssid"] in visible]
+        return known, vis
+
+    def start_hotspot(self, dev: str) -> None:
+        self.write("connecting", ssid=hotspot_ssid(self.cfg, dev), dev=dev)
+        if hotspot_up(self.cfg, dev):
+            self.next_rescan = time.monotonic() + self.cfg["hotspot_rescan_s"]
+            self.station_skips = 0
+        else:
+            self.attempt = 0
+            self.next_attempt = time.monotonic() + self.cfg["retry_interval_s"]
+
+    def hotspot_rescan(self, dev: str) -> None:
+        if hotspot_has_clients(dev) and self.station_skips < MAX_STATION_SKIPS:
+            self.station_skips += 1
+            log(f"hotspot: clients connected, postponing rescan ({self.station_skips}/{MAX_STATION_SKIPS})")
+            self.next_rescan = time.monotonic() + self.cfg["hotspot_rescan_s"]
+            return
+        log("hotspot: rescanning for known networks")
+        hotspot_down()
+        time.sleep(3)
+        _, vis = self.candidates(dev)
+        for net in vis[:3]:
+            self.write("connecting", ssid=net["ssid"], dev=dev)
+            if self.attempt_connect(dev, net):
+                self.attempt = 0
+                self.next_rescan = None
+                return
+        self.start_hotspot(dev)
+
+    def step(self) -> float:
+        """One loop iteration; returns seconds to sleep."""
+        cfg = self.cfg
+        cfg.reload()
+        now = time.monotonic()
+        if self.consume_trigger():
+            log("retry requested")
+            self.attempt = 0
+            self.rr = 0
+            self.next_attempt = now
+            self.nm_busy_since = None
+            dev = wifi_device(cfg)
+            if dev and dev["connection"] == HOTSPOT_CON:
+                hotspot_down()
+                self.next_rescan = None
+                time.sleep(2)
+        dev = wifi_device(cfg)
+        if dev is None:
+            self.write("offline", error="no WiFi device")
+            return 5
+        name, state, conn = dev["device"], dev["state"], dev["connection"]
+        if state in ("unavailable", "unmanaged"):
+            nmcli("radio", "wifi", "on", check=False)
+            self.write("offline", dev=name, error=f"WiFi device {state}")
+            return 5
+        if state == "connected" and conn == HOTSPOT_CON:
+            if self.next_rescan is None:
+                self.next_rescan = now + cfg["hotspot_rescan_s"]
+            if now >= self.next_rescan:
+                self.hotspot_rescan(name)
+                return 0
+            self.write("hotspot", dev=name, ssid=hotspot_ssid(cfg, name), ip=HOTSPOT_IP,
+                       next_retry_s=self.next_rescan - now)
+            return 1
+        if state == "connected":
+            self.attempt = 0
+            self.rr = 0
+            self.nm_busy_since = None
+            self.next_rescan = None
+            self.write("connected", dev=name, ssid=active_ssid(name) or conn, ip=device_ip(name))
+            return 2
+        if state.startswith("connecting") or state.startswith("deactivating"):
+            self.nm_busy_since = self.nm_busy_since or now
+            if now - self.nm_busy_since < NM_BUSY_MAX_S:
+                self.write("connecting", dev=name, ssid=conn, next_retry_s=max(0, self.next_attempt - now))
+                return 1
+        self.nm_busy_since = None
+        if now < self.next_attempt:
+            self.write("connecting", dev=name, ssid=self.last_try, next_retry_s=self.next_attempt - now)
+            return min(1.0, self.next_attempt - now)
+        # one attempt now
+        known, vis = self.candidates(name)
+        if not known or self.attempt >= cfg["hotspot_after_attempts"]:
+            if not known:
+                log("no known networks configured -> hotspot")
+            self.start_hotspot(name)
+            return 1
+        self.attempt += 1
+        start = time.monotonic()
+        pool = vis or known      # nothing visible: still try (hidden SSIDs)
+        net = pool[self.rr % len(pool)]
+        self.rr += 1
+        self.last_try = net["ssid"]
+        self.write("connecting", dev=name, ssid=net["ssid"], known=len(known))
+        self.attempt_connect(name, net)
+        self.next_attempt = start + cfg["retry_interval_s"]
+        return 0
+
+    def run(self) -> None:
+        stop = []
+        signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+        try:
+            set_country(self.cfg)
+            import_boot_file(self.cfg)
+        except WifiError as e:
+            log(f"import failed: {e}")
+        while not stop:
+            try:
+                delay = self.step()
+            except WifiError as e:
+                log(f"error: {e}")
+                self.write("offline", error=str(e))
+                delay = 5
+            except Exception as e:  # never die on unexpected nmcli output
+                log(f"unexpected error: {e!r}")
+                delay = 5
+            end = time.monotonic() + delay
+            while not stop and time.monotonic() < end:
+                time.sleep(min(0.5, max(0.0, end - time.monotonic())))
+                if os.path.exists(TRIGGER_FILE):
+                    break
+        self.write("offline", error="WiFi manager stopped")
+
+
+# ---------------------------------------------------------------- CLI
+
+
+def out(obj, code: int = 0) -> int:
+    print(json.dumps(obj, ensure_ascii=False))
+    return code
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, args = argv[0], argv[1:]
+    via_sudo = "SUDO_USER" in os.environ
+    try:
+        cfg = Config()
+        if cmd == "daemon":
+            if via_sudo:
+                return out({"ok": False, "error": "daemon is started by systemd"}, 1)
+            Daemon(cfg).run()
+            return 0
+        if cmd == "import":
+            return out({"ok": True, "imported": import_boot_file(cfg)})
+        if cmd == "list":
+            dev = wifi_device(cfg)
+            active = dev["connection"] if dev and dev["state"] == "connected" else None
+            return out({"ok": True, "networks": [
+                {"ssid": n["ssid"], "priority": n["priority"], "active": n["name"] == active}
+                for n in known_networks()]})
+        if cmd == "add":
+            if len(args) < 2 or len(args) > 3:
+                return out({"ok": False, "error": "usage: add <ssid> <psk> [prio]"}, 1)
+            try:
+                prio = int(args[2]) if len(args) == 3 else 0
+            except ValueError:
+                return out({"ok": False, "error": "priority must be an integer"}, 1)
+            res = add_network(cfg, args[0], args[1], prio)
+            _trigger_if_not_connected(cfg)
+            return out(res)
+        if cmd == "remove":
+            if len(args) != 1:
+                return out({"ok": False, "error": "usage: remove <ssid>"}, 1)
+            return out(remove_network(args[0]))
+        if cmd == "scan":
+            dev = wifi_device(cfg)
+            in_ap = bool(dev and dev["connection"] == HOTSPOT_CON)
+            known = {n["ssid"] for n in known_networks()}
+            nets = [dict(n, known=n["ssid"] in known) for n in scan(dev["device"] if dev else None, rescan=not in_ap)]
+            res = {"ok": True, "networks": nets}
+            if in_ap:
+                res["note"] = "hotspot active: scan results may be outdated"
+            return out(res)
+        if cmd == "retry":
+            _touch_trigger()
+            return out({"ok": True})
+        if cmd == "status":
+            try:
+                with open(cfg.net_status) as f:
+                    return out(json.load(f))
+            except (OSError, ValueError):
+                return out({"state": "unknown"})
+        return out({"ok": False, "error": f"unknown command: {cmd}"}, 1)
+    except WifiError as e:
+        return out({"ok": False, "error": str(e)}, 1)
+
+
+def _touch_trigger() -> None:
+    os.makedirs(RUN_DIR, exist_ok=True)
+    with open(TRIGGER_FILE, "w"):
+        pass
+
+
+def _trigger_if_not_connected(cfg: Config) -> None:
+    try:
+        dev = wifi_device(cfg)
+        if not dev or dev["state"] != "connected" or dev["connection"] == HOTSPOT_CON:
+            _touch_trigger()
+    except (WifiError, OSError):
+        pass
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

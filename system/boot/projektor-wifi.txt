@@ -1,0 +1,16 @@
+# projektor WiFi networks - edit this file on the SD card (FAT partition "bootfs")
+# with any PC, then boot the projector.
+#
+# One network per line:   ssid;password;priority
+#   - priority: higher number = tried first (optional, default 0)
+#   - empty password = open network:   CafeWifi;;0
+#   - lines starting with # are ignored
+#
+# At boot the networks are imported into NetworkManager and this file is renamed
+# to projektor-wifi.txt.imported (kept for reference - delete it if the passwords
+# should not stay on the card). To add more
+# networks later, create projektor-wifi.txt again or use the web UI.
+#
+# Examples:
+# Theater-Buehne;geheimesPasswort;10
+# Handy-Hotspot;nochEinPasswort;5

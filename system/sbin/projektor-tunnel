@@ -1,0 +1,215 @@
+#!/usr/bin/python3
+"""projektor-tunnel - reverse SSH tunnel to infmk1 (ARCHITECTURE.md §9).
+
+Runs as user `projektor` (projektor-tunnel.service). Wraps autossh:
+
+    autossh -M 0 -N -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes
+            -R 127.0.0.1:<remote_ssh_port>:localhost:22 -R 127.0.0.1:<remote_web_port>:localhost:<web port>
+            -i <key> -p <port> <user>@<host>
+
+and writes /run/projektor/tunnel.json:
+    {"state": "up|connecting|down|disabled", "remote": "host:2222", "updated": <unix time>}
+
+"up" = ssh reported success for every remote forward (parsed from `ssh -v` output).
+The tunnel is "disabled" when [tunnel] enabled = false or the host is empty / the
+placeholder "INFMK1_HOST"; the config is then re-checked every 60 s.
+
+Settings: [tunnel] in /etc/projektor/projektor.toml (host/port default to [backup]):
+    enabled = true  host = "infmk1.example.org"  port = 22  user = "projtunnel"
+    key = "/var/lib/projektor/.ssh/id_tunnel"  remote_ssh_port = 2222  remote_web_port = 8080
+"""
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import tomllib
+
+CONFIG_PATH = os.environ.get("PROJEKTOR_CONFIG", "/etc/projektor/projektor.toml")
+PLACEHOLDERS = {"", "INFMK1_HOST"}
+REFRESH_S = 30
+
+
+def log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def load_config() -> dict:
+    data = {}
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        log(f"config: cannot read {CONFIG_PATH}: {e}")
+    t = data.get("tunnel") or {}
+    b = data.get("backup") or {}
+    w = data.get("web") or {}
+    p = data.get("paths") or {}
+    home = os.path.expanduser("~projektor") if os.path.isdir(os.path.expanduser("~projektor")) else os.path.expanduser("~")
+    return {
+        "enabled": bool(t.get("enabled", True)),
+        "host": str(t.get("host") or b.get("host") or "").strip(),
+        "port": int(t.get("port") or b.get("port") or 22),
+        "user": str(t.get("user") or "projtunnel"),
+        "key": str(t.get("key") or os.path.join(home, ".ssh", "id_tunnel")),
+        "known_hosts": str(t.get("known_hosts") or os.path.join(home, ".ssh", "known_hosts")),
+        "remote_ssh_port": int(t.get("remote_ssh_port") or 2222),
+        "remote_web_port": int(t.get("remote_web_port") or 8080),
+        "local_web_port": int(w.get("port") or 80),
+        "status": str(p.get("tunnel_status") or "/run/projektor/tunnel.json"),
+    }
+
+
+def write_status(cfg: dict, state: str, **extra) -> None:
+    path = cfg["status"]
+    data = {"state": state, "remote": f"{cfg['host']}:{cfg['remote_ssh_port']}" if cfg["host"] else "",
+            "updated": int(time.time()), **extra}
+    d = os.path.dirname(path) or "."
+    tmp = os.path.join(d, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"cannot write {path}: {e}")
+
+
+def enabled(cfg: dict) -> tuple[bool, str]:
+    if not cfg["enabled"]:
+        return False, "disabled in settings"
+    if cfg["host"] in PLACEHOLDERS:
+        return False, "no infmk1 host configured"
+    if not os.path.exists(cfg["key"]):
+        return False, f"key {cfg['key']} missing"
+    return True, ""
+
+
+class Tunnel:
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.state = "connecting"
+        self.forwards_ok = 0
+        self.auth_at = None
+        self.lock = threading.Lock()
+        self.proc = None
+
+    def argv(self) -> list[str]:
+        c = self.cfg
+        return [
+            "autossh", "-M", "0", "-N", "-v",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+            "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=20", "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={c['known_hosts']}",
+            "-i", c["key"], "-p", str(c["port"]),
+            "-R", f"127.0.0.1:{c['remote_ssh_port']}:localhost:22",
+            "-R", f"127.0.0.1:{c['remote_web_port']}:localhost:{c['local_web_port']}",
+            f"{c['user']}@{c['host']}",
+        ]
+
+    def set_state(self, state: str) -> None:
+        with self.lock:
+            if state != self.state:
+                log(f"tunnel: {state}")
+            self.state = state
+        write_status(self.cfg, state)
+
+    def reader(self) -> None:
+        assert self.proc and self.proc.stdout
+        for raw in self.proc.stdout:
+            line = raw.rstrip()
+            low = line.lower()
+            if "starting ssh" in low:
+                self.forwards_ok = 0
+                self.auth_at = None
+                self.set_state("connecting")
+            elif "remote forward success" in low:
+                self.forwards_ok += 1
+                if self.forwards_ok >= 2:
+                    self.set_state("up")
+            elif "authenticated to" in low:
+                self.auth_at = time.monotonic()
+            elif "ssh exited" in low or "remote forward failure" in low or (
+                    not low.startswith("debug") and re.search(
+                        r"timeout, server|closed by remote host|connection refused|connection timed out|"
+                        r"permission denied|could not resolve|network is unreachable", low)):
+                self.auth_at = None
+                self.set_state("down")
+            # keep the journal readable: drop ssh debug chatter except useful lines
+            if not line.startswith("debug") or re.search(
+                    r"Authenticated to|remote forward|Connecting to|Connection established|Server host key", line):
+                log(line)
+
+    def run(self) -> int:
+        env = dict(os.environ, AUTOSSH_GATETIME="0", AUTOSSH_POLL="30", AUTOSSH_LOGFILE="/dev/stderr",
+                   LC_ALL="C")
+        log("tunnel: starting " + " ".join(self.argv()[:-1]) + f" {self.cfg['user']}@{self.cfg['host']}")
+        self.set_state("connecting")
+        self.proc = subprocess.Popen(self.argv(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, text=True, errors="replace", env=env)
+        t = threading.Thread(target=self.reader, daemon=True)
+        t.start()
+        while True:
+            try:
+                rc = self.proc.wait(timeout=REFRESH_S if self.state == "up" else 5)
+                break
+            except subprocess.TimeoutExpired:
+                # fallback "up" detection if the forward-success lines are not printed
+                if self.state == "connecting" and self.auth_at and time.monotonic() - self.auth_at > 15:
+                    self.set_state("up")
+                else:
+                    write_status(self.cfg, self.state)   # refresh "updated"
+        t.join(timeout=2)
+        return rc
+
+    def stop(self) -> None:
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+
+
+def main() -> int:
+    current: list[Tunnel] = []
+    stopping = []
+
+    def on_term(*_):
+        stopping.append(1)
+        for t in current:
+            t.stop()
+
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    while not stopping:
+        cfg = load_config()
+        ok, why = enabled(cfg)
+        if not ok:
+            write_status(cfg, "disabled", reason=why)
+            log(f"tunnel: disabled ({why}); re-checking config every 60 s")
+            for _ in range(60):
+                if stopping:
+                    break
+                time.sleep(1)
+            continue
+        tun = Tunnel(cfg)
+        current[:] = [tun]
+        try:
+            rc = tun.run()
+        except FileNotFoundError:
+            log("tunnel: autossh not installed")
+            rc = 127
+        write_status(cfg, "down")
+        if stopping:
+            break
+        log(f"tunnel: autossh exited ({rc}), restarting in 10 s")
+        time.sleep(10)
+    cfg = load_config()
+    write_status(cfg, "down" if enabled(cfg)[0] else "disabled")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

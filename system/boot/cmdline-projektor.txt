@@ -1,0 +1,1 @@
+video=HDMI-A-1:1920x1080@60D consoleblank=0 quiet loglevel=3 logo.nologo vt.global_cursor_default=0 systemd.show_status=auto rd.systemd.show_status=auto

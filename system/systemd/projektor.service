@@ -1,0 +1,29 @@
+[Unit]
+Description=Theater projector app (video player, OSC/LoRa control, web UI)
+After=systemd-tmpfiles-setup.service NetworkManager.service projektor-wifi.service plymouth-quit-wait.service
+Wants=projektor-wifi.service
+# never give up restarting (a show must go on)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=projektor
+Group=projektor
+SupplementaryGroups=video render dialout netdev
+WorkingDirectory=/var/lib/projektor
+Environment=PYTHONUNBUFFERED=1
+Environment=GST_GL_WINDOW=gbm
+Environment=GST_GL_PLATFORM=egl
+ExecStart=/opt/projektor/venv/bin/projektor run --config /etc/projektor/projektor.toml
+# web UI on port 80 without root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+# smooth playback: slightly higher CPU priority than housekeeping
+Nice=-5
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+# NOTE: no NoNewPrivileges / CapabilityBoundingSet: the web UI uses sudo for
+# projektor-wifi and reboot/poweroff (see /etc/sudoers.d/projektor).
+
+[Install]
+WantedBy=multi-user.target

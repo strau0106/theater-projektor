@@ -1,0 +1,27 @@
+
+# ---------------------------------------------------------------- projektor
+# Appended by the theater-projektor image build (image/stage-projektor).
+# Display: full KMS (dtoverlay=vc4-kms-v3d above, with cma-512 for two 1080p
+# video pipelines + GL compositing). The KMS mode itself is forced in cmdline.txt
+# (video=HDMI-A-1:1920x1080@60D) so a beamer switched on after boot gets a picture.
+[all]
+# firmware stage: treat both HDMI ports as connected even without a display/EDID
+hdmi_force_hotplug:0=1
+hdmi_force_hotplug:1=1
+# no rainbow splash
+disable_splash=1
+# no audio needed (no sound card driver, slightly faster boot)
+dtparam=audio=off
+# Bluetooth off: not used; frees the UART and avoids 2.4 GHz coexistence with WiFi
+# (BT and WiFi share one radio/antenna on Pi 4/5)
+
+[pi4]
+dtoverlay=disable-bt
+# H.264 hardware decoder (bcm2835-codec) allocates from GPU memory
+gpu_mem=256
+
+[pi5]
+dtoverlay=disable-bt-pi5
+
+[all]
+# ---------------------------------------------------------------- /projektor

@@ -1,0 +1,16 @@
+[Unit]
+Description=Projektor reverse SSH tunnel to infmk1 (autossh)
+After=network-online.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=projektor
+Group=projektor
+ExecStart=/usr/local/sbin/projektor-tunnel
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

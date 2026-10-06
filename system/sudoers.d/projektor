@@ -1,0 +1,5 @@
+# Installed as /etc/sudoers.d/projektor (mode 0440). The app (user projektor) may
+# manage WiFi and reboot/power off - nothing else.
+Cmnd_Alias PROJEKTOR_WIFI  = /usr/local/sbin/projektor-wifi, /usr/local/sbin/projektor-wifi *
+Cmnd_Alias PROJEKTOR_POWER = /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff
+projektor ALL=(root) NOPASSWD: PROJEKTOR_WIFI, PROJEKTOR_POWER
