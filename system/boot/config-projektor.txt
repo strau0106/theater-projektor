@@ -5,7 +5,8 @@
 # buffers). Do NOT raise CMA/gpu_mem on 1 GB boards: GL (v3d) buffers live in normal
 # RAM, cma-512 + gpu_mem=256 left ~236 MB and the app was OOM-killed on a Pi 4 1 GB.
 # The KMS mode itself is forced in cmdline.txt
-# (video=HDMI-A-1:1920x1080@60D) so a beamer switched on after boot gets a picture.
+# (video=HDMI-A-<port>:1920x1080@60D, HDMI_PORT in secrets/build.env) so a beamer switched on
+# after boot gets a picture.
 [all]
 # firmware stage: treat both HDMI ports as connected even without a display/EDID
 hdmi_force_hotplug:0=1

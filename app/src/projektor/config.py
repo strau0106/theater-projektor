@@ -72,6 +72,8 @@ class DisplaySettings(_Section):
     fps: int = Field(30, gt=0, le=120)
     # Default fade shape; videos/cues may override it with `fade_curve` in show.json.
     fade_curve: FadeCurve = "scurve"
+    # GL output connector on the Pi (GBM/KMS), e.g. "HDMI-A-2" for HDMI1; "" = first connected.
+    connector: str = ""
 
 
 class PlayerSettings(_Section):

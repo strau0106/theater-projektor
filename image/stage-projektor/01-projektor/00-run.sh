@@ -45,6 +45,7 @@ grep -q 'vc4-kms-v3d' "${CFG}" || { echo "config.txt: vc4-kms-v3d overlay missin
 CMD="${BOOT}/cmdline.txt"
 line="$(tr -d '\n' < "${CMD}")"
 for tok in $(cat "${S}/boot/cmdline-projektor.txt") "cfg80211.ieee80211_regdom=${WIFI_COUNTRY}"; do
+	tok="${tok/HDMI-A-1/${HDMI_CONNECTOR:-HDMI-A-1}}"   # forced mode on the configured HDMI port
 	key="${tok%%=*}"
 	# replace an existing key=..., else append
 	if [[ " ${line} " == *" ${key}="* ]] && [[ "${tok}" == *=* ]]; then

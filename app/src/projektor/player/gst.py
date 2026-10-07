@@ -111,8 +111,10 @@ def resolve_sink(sink: str) -> str:
     return sink
 
 
-def _prepare_gl_env(kind: str) -> None:
+def _prepare_gl_env(kind: str, connector: str = "") -> None:
     if kind == "gl":
+        if connector:
+            os.environ.setdefault("GST_GL_GBM_DRM_CONNECTOR", connector)
         # Pi without X/Wayland: EGL on GBM/KMS directly (fullscreen on the first connected
         # connector; set GST_GL_GBM_DRM_CONNECTOR=HDMI-A-1 in the service env to force one).
         os.environ.setdefault("GST_GL_WINDOW", "gbm")
@@ -448,7 +450,7 @@ class GstPlayer(Player):
         self._poll_src = GLib.timeout_add(_POS_POLL_MS, self._poll)
 
     def _start_display(self, kind: str) -> None:
-        _prepare_gl_env(kind)
+        _prepare_gl_env(kind, getattr(self.settings.display, "connector", "") or "")
         d = _Display(
             kind, self.settings.display.width, self.settings.display.height,
             self.settings.display.fps, self._channel, self._on_display_error,

@@ -63,10 +63,13 @@ TUNNEL_WEB_PORT="${TUNNEL_WEB_PORT:-8080}"
 WIFI_NETWORKS="${WIFI_NETWORKS:-}"
 WIFI_CA_FILES="${WIFI_CA_FILES:-}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-DE}"
+HDMI_PORT="${HDMI_PORT:-0}"   # 0 = HDMI0 (next to USB-C power), 1 = HDMI1
 [ -n "${ADMIN_PASSWORD:-}" ] || die "ADMIN_PASSWORD empty in build.env"
 [[ "${ADMIN_USER}" =~ ^[a-z][-a-z0-9_]*$ ]] || die "invalid ADMIN_USER"
 [[ "${DEVICE_NAME}" =~ ^[a-zA-Z0-9][-a-zA-Z0-9]{0,62}$ ]] || die "invalid DEVICE_NAME (hostname)"
 [[ "${WIFI_COUNTRY}" =~ ^[A-Z]{2}$ ]] || die "WIFI_COUNTRY must be a 2-letter code"
+[[ "${HDMI_PORT}" =~ ^[01]$ ]] || die "HDMI_PORT must be 0 or 1"
+HDMI_CONNECTOR="HDMI-A-$((HDMI_PORT + 1))"
 if [ -n "${HOTSPOT_PASSWORD:-}" ] && { [ ${#HOTSPOT_PASSWORD} -lt 8 ] || [ ${#HOTSPOT_PASSWORD} -gt 63 ]; }; then
 	die "HOTSPOT_PASSWORD must be 8..63 characters"
 fi
@@ -154,6 +157,7 @@ install -d -m 700 "${F}/secrets"
 	printf 'ADMIN_USER=%q\n' "${ADMIN_USER}"
 	printf 'DEVICE_NAME=%q\n' "${DEVICE_NAME}"
 	printf 'WIFI_COUNTRY=%q\n' "${WIFI_COUNTRY}"
+	printf 'HDMI_CONNECTOR=%q\n' "${HDMI_CONNECTOR}"
 	printf 'APP_VERSION=%q\n' "${APP_VERSION}"
 } > "${F}/build.env"
 
@@ -162,7 +166,8 @@ install -d -m 700 "${F}/secrets"
 DEVICE_NAME="${DEVICE_NAME}" INFMK1_HOST="${INFMK1_HOST}" INFMK1_PORT="${INFMK1_PORT}" \
 TUNNEL_SSH_PORT="${TUNNEL_SSH_PORT}" TUNNEL_WEB_PORT="${TUNNEL_WEB_PORT}" WIFI_COUNTRY="${WIFI_COUNTRY}" \
 HOTSPOT_PASSWORD="${HOTSPOT_PASSWORD:-}" DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}" \
-DISCORD_MENTION="${DISCORD_MENTION:-}" python3 - > "${F}/projektor.toml" <<'PY'
+DISCORD_MENTION="${DISCORD_MENTION:-}" HDMI_PORT="${HDMI_PORT}" HDMI_CONNECTOR="${HDMI_CONNECTOR}" \
+python3 - > "${F}/projektor.toml" <<'PY'
 import json, os
 e = os.environ
 s = lambda v: json.dumps(v, ensure_ascii=False)   # JSON strings are valid TOML basic strings
@@ -181,6 +186,7 @@ net_status = "/run/projektor/net.json"
 tunnel_status = "/run/projektor/tunnel.json"
 
 [display]
+connector = {s(e["HDMI_CONNECTOR"])}   # HDMI output used by the GL display
 sink = "auto"
 status_on_boot = true
 width = 1920
@@ -228,6 +234,7 @@ remote_ssh_port = {int(e["TUNNEL_SSH_PORT"])}
 remote_web_port = {int(e["TUNNEL_WEB_PORT"])}
 
 [beamer]
+device = {s("/dev/cec" + e["HDMI_PORT"])}
 power_on_at_boot = true   # wake the beamer via HDMI-CEC when the projector boots
 
 [notify]
