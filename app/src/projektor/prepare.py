@@ -11,6 +11,12 @@ A marker ``comment=projektor-prepared v1 gop=<s> fps=<f>`` is written into the
 file; the web UI shows such files as "prepared" and this tool skips them unless
 ``--force``.
 
+Still images (``IMAGE_INPUT_EXTS``: JPEG, PNG, WebP, HEIC, TIFF, ...) are converted
+to what the projector shows fastest: EXIF orientation applied (ffmpeg autorotate),
+shrunk to fit max 16:9 x ``--height`` (default 1920x1080, never upscaled), metadata
+stripped. Output ``<stem>.jpg`` (high quality JPEG), or ``<stem>.png`` for PNG inputs
+(lossless, keeps transparency; transparent areas show black on the projector).
+
 Standard library only (no projektor imports), so it can also run straight from a
 checkout: ``python3 app/src/projektor/prepare.py`` / ``app/scripts/prepare-video.sh``.
 Optional upload to the projector: ``--upload http://projektor.local`` (password
@@ -47,6 +53,12 @@ _RATE_TOL = 0.01  # relative
 
 H264_LEVEL = "4.1"
 HEVC_LEVEL = "4.1"
+
+# Still image inputs (anything ffmpeg decodes as one picture). The projector itself shows
+# JPEG, PNG and WebP (projektor.config.IMAGE_EXTS); outputs are JPEG, or PNG for PNG inputs.
+IMAGE_INPUT_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff",
+                              ".heic", ".heif", ".avif"})
+JPEG_QSCALE = 2  # ffmpeg mjpeg -q:v, 2 = best practical quality
 
 
 class PrepareError(Exception):
@@ -292,9 +304,9 @@ class Plan:
     dst: Path
     width: int
     height: int
-    fps: Fraction
-    gop_frames: int
-    marker: str
+    fps: Fraction = Fraction(0)  # images: 0
+    gop_frames: int = 0
+    marker: str = ""
     cmd: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -311,6 +323,59 @@ def output_path(src: Path, outdir: Optional[Path] = None) -> Path:
     if same:
         dst = d / (src.stem + ".prepared.mp4")
     return dst
+
+
+def is_image_file(path: Path) -> bool:
+    return Path(path).suffix.lower() in IMAGE_INPUT_EXTS
+
+
+def image_output_path(src: Path, outdir: Optional[Path] = None) -> Path:
+    """``<outdir or src dir>/<stem>.jpg`` (``.png`` for PNG inputs), or ``<stem>.prepared.<ext>``
+    if that is the input."""
+    src = Path(src)
+    ext = ".png" if src.suffix.lower() == ".png" else ".jpg"
+    d = Path(outdir) if outdir else src.parent
+    dst = d / (src.stem + ext)
+    try:
+        same = dst.resolve() == src.resolve()
+    except OSError:
+        same = False
+    if same:
+        dst = d / (src.stem + ".prepared" + ext)
+    return dst
+
+
+def build_image_plan(src: Path, dst: Path, info: SourceInfo, opts: Options, *,
+                     tmp: Optional[Path] = None) -> Plan:
+    """ffmpeg command line for one still image (pure function, tested exactly).
+
+    The size is a fit-into-box filter, not computed here: ffmpeg applies the EXIF orientation
+    while decoding, which ffprobe does not report, so only the filter sees the real orientation.
+    width/height in the Plan are the expected size ignoring EXIF rotation (for messages).
+    """
+    max_h = opts.height
+    max_w = _even(max_h * 16 / 9)
+    if info.width <= 0 or info.height <= 0:
+        raise PrepareError("image has no size")
+    s = min(1.0, max_w / info.width, max_h / info.height)
+    w, h = max(1, round(info.width * s)), max(1, round(info.height * s))
+    png = Path(dst).suffix.lower() == ".png"
+    notes: list[str] = []
+    if s < 1.0:
+        notes.append(f"scaling {info.width}x{info.height} to fit into {max_w}x{max_h}")
+    if not png and info.codec != "mjpeg":
+        notes.append(f"converting {info.codec or 'image'} to JPEG")
+    vf = (f"scale=w='min(iw,{max_w})':h='min(ih,{max_h})':force_original_aspect_ratio=decrease"
+          f":flags=lanczos,setsar=1")
+    cmd = [opts.ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+           "-i", str(src), "-map", f"0:{info.stream_index}", "-map_metadata", "-1",
+           "-frames:v", "1", "-vf", vf]
+    if png:
+        cmd += ["-c:v", "png"]
+    else:
+        cmd += ["-c:v", "mjpeg", "-q:v", str(JPEG_QSCALE), "-pix_fmt", "yuvj420p"]
+    cmd += ["-update", "1", "-f", "image2", str(tmp or dst)]
+    return Plan(src=Path(src), dst=Path(dst), width=w, height=h, cmd=cmd, notes=notes)
 
 
 def build_plan(src: Path, dst: Path, info: SourceInfo, opts: Options, *, tmp: Optional[Path] = None,
@@ -566,11 +631,13 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="projektor-prepare",
         description="Transcode videos into the format the projector (Raspberry Pi) plays best: "
-        "H.264 High <= 1080p, constant frame rate, keyframe every 0.5 s, no audio.",
+        "H.264 High <= 1080p, constant frame rate, keyframe every 0.5 s, no audio. "
+        "Images (jpg, png, webp, heic, tif, ...) are rotated upright and shrunk to fit 1920x1080 "
+        "(JPEG; PNG stays PNG).",
         epilog="Password for --upload: --password-file FILE or env PROJEKTOR_PASSWORD. "
         "Details: docs/videos.md",
     )
-    p.add_argument("inputs", nargs="+", metavar="INPUT", help="video file(s)")
+    p.add_argument("inputs", nargs="+", metavar="INPUT", help="video and/or image file(s)")
     p.add_argument("-o", "--outdir", help="output directory (default: next to the input)")
     p.add_argument("--fps", type=parse_fps_option, default="auto",
                    help="output frame rate: auto (default: keep 24/25/30, halve 50/60, else 30), keep, or a number")
@@ -648,6 +715,8 @@ def _process_one(src: Path, outdir: Optional[Path], opts: Options, args, ffprobe
     """Transcode one file; returns the file to upload (output, or the input if it is already prepared)."""
     if not src.is_file():
         raise PrepareError("no such file")
+    if is_image_file(src):
+        return _process_image(src, outdir, opts, args, ffprobe, tag)
     info = ffprobe_source(src, ffprobe)
     if info.marker and not args.force:
         print(f"{tag}: already prepared ({info.comment}), skipping (--force to re-encode)")
@@ -686,6 +755,41 @@ def _process_one(src: Path, outdir: Optional[Path], opts: Options, args, ffprobe
     size = dst.stat().st_size
     dt = time.monotonic() - t0
     print(f"{tag}: done in {_fmt_t(dt)}, {size / 1e6:.1f} MB -> {dst}")
+    return dst
+
+
+def _process_image(src: Path, outdir: Optional[Path], opts: Options, args, ffprobe: str, tag: str) -> Optional[Path]:
+    """Convert one still image; returns the file to upload."""
+    info = ffprobe_source(src, ffprobe)
+    dst = image_output_path(src, outdir)
+    if dst.exists() and not args.force:
+        print(f"{tag}: output {dst} exists, skipping (--force to redo)")
+        return dst
+    tmp = dst.with_name(f".{dst.stem}.part{dst.suffix}")
+    plan = build_image_plan(src, dst, info, opts, tmp=tmp)
+    if args.dry_run:
+        print(f"{tag} -> {dst}")
+        for note in plan.notes:
+            print(f"  {note}")
+        cmd = list(plan.cmd)
+        cmd[-1] = str(dst)
+        print("  " + shlex.join(cmd))
+        return dst
+    print(f"{tag} -> {dst.name}: image, fit into {_even(opts.height * 16 / 9)}x{opts.height}")
+    for note in plan.notes:
+        print(f"  {note}")
+    try:
+        run_ffmpeg(plan.cmd, None, label=src.name)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    try:
+        out = ffprobe_source(dst, ffprobe)
+        size = f"{out.width}x{out.height}, "
+    except PrepareError:
+        size = ""
+    print(f"{tag}: done, {size}{dst.stat().st_size / 1e6:.1f} MB -> {dst}")
     return dst
 
 

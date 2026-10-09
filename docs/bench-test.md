@@ -73,6 +73,12 @@ For each command check the beamer and the reply (`/proj/state` or QLab log):
 - [ ] Fades are smooth (no banding steps visible on the beamer), CPU load during a fade
       (`htop`): ______ %
 - [ ] Pi 4: H.264 1080p plays without dropped frames; Pi 5: HEVC 1080p plays without dropped frames.
+- [ ] Image cue (prepared 1920x1080 JPEG, fade in 2 s, fade out 3 s): fades in smoothly, stays,
+      `/proj/fadeout` fades out over 3 s; correct colours, no banding.
+      GO → first picture: ______ ms
+- [ ] Unprepared camera photo (e.g. 4000x3000, portrait with EXIF rotation): shown upright and
+      letterboxed. GO → first picture: ______ ms (if slow: `projektor-prepare` it)
+- [ ] Image → video → image cue sequence by GO, and an image as the standby cue (preloaded)
 
 ## 6. LoRa path
 

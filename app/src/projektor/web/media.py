@@ -1,5 +1,5 @@
 """Media files: probing (GstPbutils Discoverer, MP4 sample tables, optional ffprobe),
-codec / keyframe warnings, "prepared" marker, safe file names."""
+codec / keyframe / image-size warnings, "prepared" marker, safe file names."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import threading
 import warnings
 from pathlib import Path
 
+from projektor.config import is_image
 from projektor.prepare import parse_marker
 
 log = logging.getLogger(__name__)
@@ -401,6 +402,10 @@ class Prober:
             return {"error": "probe unavailable (no GStreamer)"}
         if res.get("error") or not res.get("codec"):
             return res
+        if is_image(path):  # one frame: no keyframes, frame rate or duration; no marker
+            res.update(image=True, fps=None, duration=None, prepared=False, marker=None)
+            res.pop("comment", None)
+            return res
         self._add_keyframes(path, res)
         comment = res.pop("comment", None)
         marker = parse_marker(comment)
@@ -502,6 +507,18 @@ def _discoverer_comment(info) -> str | None:
 
 
 PREPARE_HINT = "run projektor-prepare (see docs/videos.md)"
+IMAGE_CODECS = ("image/jpeg", "image/png", "image/webp")
+
+
+def image_warnings(probe: dict) -> list[str]:
+    codec = (probe.get("codec") or "").lower()
+    if codec not in IMAGE_CODECS:
+        return [f"{probe.get('codec_name') or codec or 'unknown format'}: not a JPEG, PNG or WebP image - {PREPARE_HINT}"]
+    w, h = probe.get("width") or 0, probe.get("height") or 0
+    if w > 1920 or h > 1080:
+        return [f"image {w}x{h} is larger than the 1080p output: the Pi shrinks it every time it is shown "
+                f"(slower start) - {PREPARE_HINT}"]
+    return []
 
 
 def codec_warnings(probe: dict | None) -> list[str]:
@@ -510,6 +527,8 @@ def codec_warnings(probe: dict | None) -> list[str]:
         return []
     if probe.get("error"):
         return [probe["error"]]
+    if probe.get("image"):
+        return image_warnings(probe)
     codec = (probe.get("codec") or "").lower()
     if not codec:
         return ["no video stream found"]

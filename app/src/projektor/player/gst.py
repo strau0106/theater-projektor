@@ -52,6 +52,12 @@ the curve is evaluated by the streaming thread and does not depend on the Python
 load. The state change at the end is a GLib timeout. Without GstController or in CPU mode a
 16 ms GLib timer applies the same curve (base.fade_alpha).
 
+Still images (clip.image): the same clip pipeline. playbin3 decodes the single frame, prerolls
+it and posts EOS right after; image clips always have end="hold", so the frame stays on screen
+(the mixer keeps the last frame) and fades work as for video. A playbin3 video-filter applies
+the EXIF orientation and shrinks the picture to fit the display (never upscales: the GL mixer
+scales up on the GPU, and a camera photo would exceed the Pi's 4096 px texture limit).
+
 Preloading: a _Run is a self-contained clip pipeline; only the run in self._run feeds the
 display (see _on_handoff). prepare(clip) builds ONE more run (self._prep), prerolled to
 PAUSED at its start frame (accurate seek) but not connected to the display; the sink keeps
@@ -648,6 +654,8 @@ class GstPlayer(Player):
         pb.set_property("uri", path.resolve().as_uri())
         pb.set_property("flags", _PLAYBIN_FLAGS)
         pb.set_property("video-sink", self._clip_sink(r))
+        if clip.image:
+            pb.set_property("video-filter", self._image_filter())
         r.pipeline = pb
         r.probe_id = r.sinkpad.add_probe(
             Gst.PadProbeType.BUFFER | Gst.PadProbeType.BLOCK, self._probe, r
@@ -767,6 +775,16 @@ class GstPlayer(Player):
                 r.begin_source = GLib.timeout_add(1, self._begin, r)
                 return
         self._schedule_begin(r)
+
+    def _image_filter(self) -> Gst.Element:
+        """EXIF orientation + fit into the display size (aspect kept, never upscaled)."""
+        W, H = self.settings.display.width, self.settings.display.height
+        return Gst.parse_bin_from_description(
+            "videoconvert ! videoflip video-direction=auto ! videoscale method=4-tap "
+            f'! capsfilter caps="video/x-raw,width=(int)[1,{W}],height=(int)[1,{H}],'
+            'pixel-aspect-ratio=(fraction)1/1"',
+            True,
+        )
 
     def _clip_sink(self, r: _Run) -> Gst.Element:
         d = self._display
@@ -994,7 +1012,7 @@ class GstPlayer(Player):
     # ------------------------------------------------------------------ commands
     def pause(self) -> None:
         r = self._run
-        if r is None or self._paused or self._holding:
+        if r is None or self._paused or self._holding or r.clip.image:
             return
         if r.phase == "started":
             r.pipeline.set_state(Gst.State.PAUSED)
@@ -1032,7 +1050,7 @@ class GstPlayer(Player):
 
     def seek(self, seconds: float) -> None:
         r = self._run
-        if r is None or r.phase not in ("ready", "started"):
+        if r is None or r.phase not in ("ready", "started") or r.clip.image:
             return
         c = r.clip
         hi = self.duration()

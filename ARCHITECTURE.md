@@ -1,8 +1,8 @@
 # Theater-Projektor — Architecture
 
 Battery-powered wireless stage projector: Raspberry Pi 4/5 + powerbank + battery beamer.
-No data cable, no power cable. Video playback controlled from QLab via OSC over WiFi
-and/or LoRa (Waveshare SX1262 USB adapters).
+No data cable, no power cable. Video and still-image playback controlled from QLab via OSC
+over WiFi and/or LoRa (Waveshare SX1262 USB adapters).
 
 This file is the **contract** between components. Change it first, then code.
 
@@ -75,7 +75,7 @@ Paths (all configurable in settings TOML):
 |---|---|
 | `/etc/projektor/projektor.toml` | settings (see §6) |
 | `/var/lib/projektor/show.json` | show: videos + cues (edited by web UI) |
-| `/var/lib/projektor/media/` | video files |
+| `/var/lib/projektor/media/` | video and image files |
 | `/run/projektor/net.json` | WiFi state, written by `projektor-wifi` |
 | `/run/projektor/tunnel.json` | tunnel state, written by `projektor-tunnel` |
 | `/boot/firmware/projektor-wifi.txt` | optional WiFi list, imported at boot (SD card editable on any PC) |
@@ -132,6 +132,15 @@ Process model inside `projektor run`:
 - Pause points: a blocking pad probe on the clip sink lets the frame at/after the pause point
   through, holds back the next one and pauses the clip pipeline (frame accurate);
   `go`/`resume` continues.
+- Still images (JPEG, PNG, WebP; detected by file extension, `config.IMAGE_EXTS`) use the same clip
+  pipeline: playbin3 decodes one frame, then EOS. An image clip always ends in `hold`, so the frame
+  stays on screen (state `holding`) until the next cue, `fadeout` or `stop`; fade-in / fade-out are
+  the normal mixer alpha fades. playbin3 `video-filter` for images: `videoconvert ! videoflip
+  video-direction=auto` (EXIF orientation) `! videoscale` to fit into display W x H (never upscaled;
+  the GL mixer scales up on the GPU; keeps the texture below the Pi's 4096 px GL limit). Software
+  decode (one frame): a large photo takes noticeably longer to start; `projektor-prepare` shrinks
+  images to the display size beforehand. In/out points, pause points, `start_at`, `end`, `seek` and
+  `pause` do not apply to images (ignored).
 
 ## 5. OSC command set
 
@@ -143,7 +152,7 @@ Default UDP port **9000**. All addresses under `/proj`. Arguments in brackets ar
 | `/proj/go` | — | If paused at a pause point: resume. Else run the standby cue and advance standby. |
 | `/proj/cue` | `ref` | Run cue `ref` (idempotent: if `ref` is already playing, no restart). Standby := next. |
 | `/proj/standby` | `ref` | Set standby cue, no playback change. |
-| `/proj/play` | `video_id [fade_in_s]` | Play video directly (no cue), defaults from video entry. |
+| `/proj/play` | `video_id [fade_in_s]` | Play video or image directly (no cue), defaults from video entry. |
 | `/proj/pause` | — | Freeze current frame. |
 | `/proj/resume` | — | Resume from pause (manual or pause point). |
 | `/proj/fadeout` | `[seconds]` | Fade to black, then stop. Default = cue/video `fade_out`. |
@@ -256,6 +265,13 @@ min_interval_s = 30      # rate limit per event type
 }
 ```
 Cue fields set to `null` inherit from the video. `end` ∈ `black | hold | loop`. Times in seconds (float).
+
+Images are entries in `videos` too (same schema, no separate list): a `file` with an image extension
+(`.jpg .jpeg .png .webp`) is a still image. For images only `title`, `fade_in`, `fade_out` and
+`fade_curve` (and the cue's `fade_in` / `fade_out` / `fade_curve` overrides) are used; the image is
+shown with a fade-in of `fade_in` s and stays until the next cue / `stop`, or fades out over
+`fade_out` s on `/proj/fadeout`. `in_point`, `out_point`, `pause_points`, `start_at` and `end` are
+ignored (`end` is always `hold`).
 
 ### `/run/projektor/net.json` (written by `projektor-wifi`, read by status screen + web)
 

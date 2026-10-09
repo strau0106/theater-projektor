@@ -42,10 +42,10 @@ Pick one style and stick to it (ids are safer if you reorder cues in the web UI)
 | `/proj/cue "1"` | run cue id 1 (idempotent: no restart if it already plays); standby := next |
 | `/proj/go` | resume at a pause point, else run the standby cue |
 | `/proj/standby "4"` | set the standby cue, nothing else |
-| `/proj/play "intro"` / `/proj/play "intro" 2.0` | play video `intro` directly (optional fade-in seconds) |
+| `/proj/play "intro"` / `/proj/play "intro" 2.0` | play video or image `intro` directly (optional fade-in seconds) |
 | `/proj/pause` | freeze frame |
 | `/proj/resume` | continue after pause / pause point |
-| `/proj/fadeout` / `/proj/fadeout 3.5` | fade to black (default: cue/video fade_out) |
+| `/proj/fadeout` / `/proj/fadeout 3.5` | fade to black (default: cue/video fade_out; also ends an image cue) |
 | `/proj/stop` | cut to black |
 | `/proj/seek 42.0` | jump to 42 s in the current video |
 | `/proj/status 1` / `/proj/status 0` | show / hide the status screen (only when nothing plays) |

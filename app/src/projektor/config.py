@@ -33,6 +33,8 @@ __all__ = [
     "resolve_cue_ref",
     "resolve_cue",
     "resolve_video",
+    "is_image",
+    "IMAGE_EXTS",
     "DEV_CONFIG",
 ]
 
@@ -43,6 +45,14 @@ EndMode = Literal["black", "hold", "loop"]
 SinkMode = Literal["auto", "gl", "kms", "window"]
 # Fade shapes (player/base.py fade_value): linear alpha, smoothstep, linear in perceived lightness.
 FadeCurve = Literal["linear", "scurve", "perceptual"]
+
+# Still images (ARCHITECTURE.md §4): decoders on the Pi image: jpegdec, pngdec (good), webpdec (bad).
+IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+
+
+def is_image(file: str | os.PathLike) -> bool:
+    """True if `file` (a media file name or path) is a still image, by its extension."""
+    return PurePosixPath(os.fspath(file)).suffix.lower() in IMAGE_EXTS
 
 
 # --------------------------------------------------------------------------- settings
@@ -258,6 +268,10 @@ class Video(BaseModel):
     end: EndMode = "black"
     fade_curve: FadeCurve | None = None  # null = settings display.fade_curve
 
+    @property
+    def image(self) -> bool:
+        return is_image(self.file)
+
     @field_validator("pause_points")
     @classmethod
     def _pp(cls, v: list[float]) -> list[float]:
@@ -345,7 +359,7 @@ class Show(BaseModel):
             v = self.videos.get(c.video)
             if v is None:
                 raise ValueError(f"cue {c.id!r} (#{i + 1}) references unknown video {c.video!r}")
-            if v.out_point is not None:
+            if v.out_point is not None and not v.image:  # images: timeline fields ignored
                 if c.start_at is not None and c.start_at >= v.out_point:
                     raise ValueError(f"cue {c.id!r}: start_at after out_point of video {c.video!r}")
                 if c.pause_points and c.pause_points[-1] > v.out_point:
@@ -457,6 +471,7 @@ class Clip:
     cue_index: int | None = None
     title: str = field(default="", compare=False)
     fade_curve: FadeCurve | None = None  # None = player default (settings display.fade_curve)
+    image: bool = False  # still image: one frame, always end="hold", no in/out/pause points
 
 
 def resolve_cue_ref(show: Show, ref: str | int) -> int:
@@ -502,23 +517,30 @@ def _make_clip(
     cue_index: int | None = None,
     fade_curve: str | None = None,
 ) -> Clip:
-    start = v.in_point if start_at is None else max(float(start_at), 0.0)
-    pps = v.pause_points if pause_points is None else pause_points
-    pps = tuple(p for p in pps if p > start + 1e-6 and (v.out_point is None or p <= v.out_point))
+    image = v.image
+    if image:  # one frame that stays until the next command; timeline fields don't apply
+        in_point, out_point, start, pps, end_mode = 0.0, None, 0.0, (), "hold"
+    else:
+        in_point, out_point = v.in_point, v.out_point
+        start = v.in_point if start_at is None else max(float(start_at), 0.0)
+        pps = v.pause_points if pause_points is None else pause_points
+        pps = tuple(p for p in pps if p > start + 1e-6 and (v.out_point is None or p <= v.out_point))
+        end_mode = v.end if end is None else end
     return Clip(
         video_id=video_id,
         path=(media_dir / v.file),
-        in_point=v.in_point,
-        out_point=v.out_point,
+        in_point=in_point,
+        out_point=out_point,
         start_at=start,
         pause_points=pps,
         fade_in=v.fade_in if fade_in is None else float(fade_in),
         fade_out=v.fade_out if fade_out is None else float(fade_out),
-        end=v.end if end is None else end,  # type: ignore[arg-type]
+        end=end_mode,  # type: ignore[arg-type]
         cue_id=cue_id,
         cue_index=cue_index,
         title=v.title,
         fade_curve=v.fade_curve if fade_curve is None else fade_curve,  # type: ignore[arg-type]
+        image=image,
     )
 
 

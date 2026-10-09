@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import ClientDisconnect
 
 from projektor.backup import BackupBusy, BackupError, BackupManager
+from projektor.config import is_image
 from projektor.web import auth
 from projektor.web.media import UPLOAD_PREFIX, Prober, codec_warnings, list_media_files, safe_filename
 from projektor.web.showedit import (
@@ -262,7 +263,8 @@ def create_app(
 
     def _video_view(vid: str, v: dict, show: dict, files: dict, probe: bool) -> dict:
         f = files.get(v.get("file"))
-        out = {"id": vid, **v, "exists": f is not None, "size": f["size"] if f else None, "used_by": cues_using(show, vid)}
+        out = {"id": vid, **v, "image": is_image(v.get("file") or ""), "exists": f is not None,
+               "size": f["size"] if f else None, "used_by": cues_using(show, vid)}
         if probe and f:
             p = prober.probe(media_dir / v["file"])
             out["probe"] = p
@@ -280,6 +282,8 @@ def create_app(
         videos = [_video_view(vid, v, show, files, probe) for vid, v in show.get("videos", {}).items()]
         referenced = {v.get("file") for v in show.get("videos", {}).values()}
         orphans = [f for name, f in files.items() if name not in referenced]
+        for f in orphans:
+            f["image"] = is_image(f["name"])
         if probe:
             for f in orphans:
                 f["probe"] = prober.probe(media_dir / f["name"])

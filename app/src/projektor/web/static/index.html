@@ -25,7 +25,7 @@
   </div>
   <nav class="tabs">
     <button data-tab="live" class="active">Live</button>
-    <button data-tab="videos">Videos</button>
+    <button data-tab="videos">Media</button>
     <button data-tab="cues">Cues</button>
     <button data-tab="system">System</button>
   </nav>
@@ -94,7 +94,7 @@
   <div class="card">
     <h2>Upload</h2>
     <div class="row">
-      <input type="file" id="upFile" accept="video/*,.mp4,.mkv,.mov,.m4v,.ts" class="grow">
+      <input type="file" id="upFile" accept="video/*,.mp4,.mkv,.mov,.m4v,.ts,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" class="grow">
     </div>
     <div class="row" style="margin-top:8px">
       <label class="inline"><input type="checkbox" id="upOverwrite"> overwrite existing file</label>
@@ -108,11 +108,12 @@
     </div>
     <div id="upMsg" class="small" style="margin-top:6px"></div>
     <div class="muted small" id="diskInfo" style="margin-top:6px"></div>
-    <div class="muted small" style="margin-top:4px">Optimise videos for the Pi first: <code>projektor-prepare *.mov -o prepared/ --upload http://projektor.local --password-file pw.txt</code></div>
+    <div class="muted small" style="margin-top:4px">Optimise videos and images for the Pi first: <code>projektor-prepare *.mov *.jpg -o prepared/ --upload http://projektor.local --password-file pw.txt</code></div>
   </div>
   <div class="card">
-    <div class="row"><h2 class="grow" style="margin:0">Videos</h2><button class="small" id="vidRefresh">Refresh</button></div>
-    <p class="muted small">Pi 4: H.264 up to 1080p. Pi 5: HEVC (hardware) or H.264 up to 1080p30 (software).</p>
+    <div class="row"><h2 class="grow" style="margin:0">Videos &amp; images</h2><button class="small" id="vidRefresh">Refresh</button></div>
+    <p class="muted small">Pi 4: H.264 up to 1080p. Pi 5: HEVC (hardware) or H.264 up to 1080p30 (software).
+      Images: JPEG, PNG or WebP, ideally at most 1920x1080; an image fades in, stays until the next cue and fades out on "Fade out".</p>
     <div id="videoList"></div>
   </div>
   <div class="card" id="orphanCard">
@@ -125,7 +126,7 @@
 <section class="tab" id="tab-cues">
   <div class="card">
     <div class="row"><h2 class="grow" style="margin:0">Cue list</h2><button class="primary" id="cueAdd">+ Add cue</button></div>
-    <p class="muted small">Empty override fields inherit from the video. Changes are saved immediately and reloaded into the player.</p>
+    <p class="muted small">Empty override fields inherit from the video / image. Changes are saved immediately and reloaded into the player.</p>
     <div id="cueList"></div>
   </div>
 </section>

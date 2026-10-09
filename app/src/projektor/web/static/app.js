@@ -151,6 +151,16 @@ function videoTitle(id) {
   return v ? (v.title || id) : id;
 }
 
+// still image (config.IMAGE_EXTS): fades only, no in/out/pause points/start/end
+function isImage(file) {
+  return /\.(jpe?g|png|webp)$/i.test(file || "");
+}
+
+function videoIsImage(id) {
+  const v = S.show && S.show.videos[id];
+  return !!v && isImage(v.file);
+}
+
 // ------------------------------------------------------------------ auth
 
 function showLogin() {
@@ -229,6 +239,7 @@ function onState(st) {
     $("nowCue").textContent = st.video ? "(direct play)" : "-";
   }
   $("nowVideo").textContent = st.video ? `${videoTitle(st.video)}  [${st.video}]` +
+    (videoIsImage(st.video) ? "  - image" : "") +
     (st.pause_reason ? `  - paused (${st.pause_reason.replace("_", " ")})` : "") : (st.status_screen ? "status screen" : "black");
   const pos = st.position || 0, dur = st.duration;
   $("nowPos").textContent = fmtTime(pos);
@@ -360,17 +371,17 @@ function renderVideos() {
   const d = S.videos; if (!d) return;
   if (d.disk) $("diskInfo").textContent = `Disk: ${fmtBytes(d.disk.free)} free of ${fmtBytes(d.disk.total)} - max upload ${d.max_upload_mb} MB`;
   const list = $("videoList"); list.innerHTML = "";
-  if (!d.videos.length) list.append(h("p", { class: "muted" }, "No videos yet. Upload one above."));
+  if (!d.videos.length) list.append(h("p", { class: "muted" }, "No videos or images yet. Upload one above."));
   for (const v of d.videos) list.append(videoItem(v));
   const ol = $("orphanList"); ol.innerHTML = "";
   $("orphanCard").classList.toggle("hidden", !d.files.length);
   for (const f of d.files) {
     ol.append(h("div", { class: "item" },
-      h("div", { class: "title" }, f.name, preparedTag(f.probe)),
+      h("div", { class: "title" }, f.name, f.image ? imageTag() : preparedTag(f.probe)),
       h("div", { class: "sub" }, fmtBytes(f.size), probeLine(f.probe) ? " - " + probeLine(f.probe) : ""),
       (f.warnings || []).map((w) => h("div", { class: "warn" }, w)),
       h("div", { class: "row", style: "margin-top:8px" },
-        h("button", { class: "small primary", onclick: () => act(async () => { await api("POST", "/api/videos", { file: f.name }); await loadVideos(); }, "video added") }, "Add as video"),
+        h("button", { class: "small primary", onclick: () => act(async () => { await api("POST", "/api/videos", { file: f.name }); await loadVideos(); }, f.image ? "image added" : "video added") }, f.image ? "Add as image" : "Add as video"),
         h("button", { class: "small danger", onclick: () => { if (confirm(`Delete file ${f.name}?`)) act(async () => { await api("DELETE", "/api/files/" + encodeURIComponent(f.name)); await loadVideos(); }, "deleted"); } }, "Delete file"))));
   }
 }
@@ -381,16 +392,21 @@ function preparedTag(p) {
   return h("span", { class: "tag ok", title: "transcoded with projektor-prepare" + ki }, "prepared");
 }
 
+function imageTag() {
+  return h("span", { class: "tag", title: "still image: fades in, stays until the next cue / fade out" }, "image");
+}
+
 function videoItem(v) {
+  const timing = v.image
+    ? `fade in ${v.fade_in} s - fade out ${v.fade_out} s - stays until next cue / fade out`
+    : `in ${fmtTime(v.in_point)} - out ${v.out_point === null ? "end" : fmtTime(v.out_point)} - fade ${v.fade_in}/${v.fade_out} s - end: ${v.end}` +
+      (v.pause_points && v.pause_points.length ? ` - pauses: ${v.pause_points.map(fmtTime).join(", ")}` : "");
   const el = h("div", { class: "item" },
     h("div", { class: "row" },
       h("div", { class: "grow" },
-        h("div", { class: "title" }, v.title || v.id, h("span", { class: "muted small" }, `  [${v.id}]`), preparedTag(v.probe)),
+        h("div", { class: "title" }, v.title || v.id, h("span", { class: "muted small" }, `  [${v.id}]`), v.image ? imageTag() : preparedTag(v.probe)),
         h("div", { class: "sub" }, `${v.file} - ${fmtBytes(v.size)}`, probeLine(v.probe) ? h("br") : null, probeLine(v.probe) || ""),
-        h("div", { class: "sub" },
-          `in ${fmtTime(v.in_point)} - out ${v.out_point === null ? "end" : fmtTime(v.out_point)} - fade ${v.fade_in}/${v.fade_out} s - end: ${v.end}` +
-          (v.pause_points && v.pause_points.length ? ` - pauses: ${v.pause_points.map(fmtTime).join(", ")}` : "") +
-          (v.used_by.length ? ` - cues: ${v.used_by.join(", ")}` : " - not used by any cue")))),
+        h("div", { class: "sub" }, timing + (v.used_by.length ? ` - cues: ${v.used_by.join(", ")}` : " - not used by any cue")))),
     (v.warnings || []).map((w) => h("div", { class: "warn" }, w)),
     h("div", { class: "row", style: "margin-top:8px" },
       h("button", { class: "small", onclick: () => { S.editVideo = S.editVideo === v.id ? null : v.id; S.videoDraft = null; renderVideos(); } }, S.editVideo === v.id ? "Close" : "Edit"),
@@ -402,7 +418,7 @@ function videoItem(v) {
 }
 
 async function deleteVideo(v) {
-  if (!confirm(`Delete video "${v.id}" and its file ${v.file}?`)) return;
+  if (!confirm(`Delete ${v.image ? "image" : "video"} "${v.id}" and its file ${v.file}?`)) return;
   try {
     await api("DELETE", `/api/videos/${encodeURIComponent(v.id)}`);
   } catch (e) {
@@ -434,34 +450,40 @@ function videoEditor(v) {
     if (!dr.pause_points.includes(p)) dr.pause_points.push(p);
     renderChips();
   };
-  const ed = h("div", { class: "editor" },
-    h("div", { class: "grid2" },
-      h("label", { class: "f" }, "Title", inp("title", v.title, { inputmode: null })),
-      h("label", { class: "f" }, "At end", h("select", { "data-k": "end" }, ["black", "hold", "loop"].map((m) => h("option", { value: m, selected: v.end === m }, m)))),
-      h("label", { class: "f" }, "In point (s)", inp("in_point", v.in_point)),
-      h("label", { class: "f" }, "Out point (s, empty = end)", inp("out_point", v.out_point)),
-      h("label", { class: "f" }, "Fade in (s)", inp("fade_in", v.fade_in)),
-      h("label", { class: "f" }, "Fade out (s)", inp("fade_out", v.fade_out))),
+  const fades = [
+    h("label", { class: "f" }, "Fade in (s)", inp("fade_in", v.fade_in)),
+    h("label", { class: "f" }, "Fade out (s)", inp("fade_out", v.fade_out))];
+  const timeline = v.image ? [
+    h("p", { class: "muted small" }, "Image: fades in over \"Fade in\" when its cue runs, stays until the next cue, fades out over \"Fade out\" on Fade out (/proj/fadeout)."),
+  ] : [
     h("label", { class: "f" }, "Pause points"), chips,
     h("div", { class: "row" }, h("div", { class: "grow" }, ppInput),
       h("button", { class: "small", onclick: () => { addPP(num(ppInput.value)); ppInput.value = ""; } }, "Add"),
       h("button", { class: "small", onclick: () => {
         if (!S.state || S.state.video !== v.id) return toast("this video is not playing on the projector", true);
         addPP(S.state.position);
-      } }, "Add current position")),
+      } }, "Add current position"))];
+  const ed = h("div", { class: "editor" },
+    h("div", { class: "grid2" },
+      h("label", { class: "f" }, "Title", inp("title", v.title, { inputmode: null })),
+      v.image ? null : h("label", { class: "f" }, "At end", h("select", { "data-k": "end" }, ["black", "hold", "loop"].map((m) => h("option", { value: m, selected: v.end === m }, m)))),
+      v.image ? null : h("label", { class: "f" }, "In point (s)", inp("in_point", v.in_point)),
+      v.image ? null : h("label", { class: "f" }, "Out point (s, empty = end)", inp("out_point", v.out_point)),
+      ...fades),
+    ...timeline,
     h("div", { class: "row" },
       h("button", { class: "primary", onclick: () => saveVideo(v, ed) }, "Save"),
       h("button", { onclick: () => { S.editVideo = null; renderVideos(); } }, "Cancel")),
     h("h3", {}, "Rename"),
     h("div", { class: "grid2" },
-      h("label", { class: "f" }, "Video id (used by OSC /proj/play)", h("input", { "data-r": "new_id", value: v.id, autocapitalize: "off" })),
+      h("label", { class: "f" }, `${v.image ? "Image" : "Video"} id (used by OSC /proj/play)`, h("input", { "data-r": "new_id", value: v.id, autocapitalize: "off" })),
       h("label", { class: "f" }, "File name", h("input", { "data-r": "file", value: v.file, autocapitalize: "off" }))),
     h("div", { class: "row" }, h("button", { class: "small", onclick: () => renameVideo(v, ed) }, "Rename")));
   return ed;
 }
 
 async function saveVideo(v, ed) {
-  const body = { pause_points: S.videoDraft.pause_points };
+  const body = v.image ? {} : { pause_points: S.videoDraft.pause_points };
   ed.querySelectorAll("[data-k]").forEach((el) => {
     const k = el.dataset.k;
     if (k === "title" || k === "end") body[k] = el.value;
@@ -552,9 +574,10 @@ function renderCues() {
   if (!cues.length) box.append(h("p", { class: "muted" }, "No cues yet."));
   cues.forEach((c, i) => {
     const v = S.show.videos[c.video];
+    const img = videoIsImage(c.video);
     const ov = [];
-    for (const k of ["start_at", "fade_in", "fade_out", "end"]) if (c[k] !== null && c[k] !== undefined) ov.push(`${k.replace("_", " ")}: ${c[k]}`);
-    if (c.pause_points) ov.push(`pauses: ${c.pause_points.map(fmtTime).join(", ") || "none"}`);
+    for (const k of img ? ["fade_in", "fade_out"] : ["start_at", "fade_in", "fade_out", "end"]) if (c[k] !== null && c[k] !== undefined) ov.push(`${k.replace("_", " ")}: ${c[k]}`);
+    if (c.pause_points && !img) ov.push(`pauses: ${c.pause_points.map(fmtTime).join(", ") || "none"}`);
     const item = h("div", { class: "item" },
       h("div", { class: "row" },
         h("div", { class: "row", style: "gap:4px" },
@@ -562,7 +585,7 @@ function renderCues() {
           h("button", { class: "small", disabled: i === cues.length - 1, title: "move down", onclick: () => moveCue(i, 1) }, "▼")),
         h("div", { class: "grow" },
           h("div", { class: "title" }, `#${i + 1}  `, h("span", { class: "muted" }, `id ${c.id}`), "  ", c.name || "(unnamed)"),
-          h("div", { class: "sub" }, v ? `${v.title || c.video} [${c.video}]` : `missing video ${c.video}`, ov.length ? " - " + ov.join(" - ") : "")),
+          h("div", { class: "sub" }, v ? `${img ? "image: " : ""}${v.title || c.video} [${c.video}]` : `missing video ${c.video}`, ov.length ? " - " + ov.join(" - ") : "")),
         h("button", { class: "small", onclick: () => { S.editCue = S.editCue === c.id ? null : c.id; renderCues(); } }, S.editCue === c.id ? "Close" : "Edit")));
     if (S.editCue === c.id) item.append(cueEditor(c));
     box.append(item);
@@ -571,6 +594,7 @@ function renderCues() {
 
 function cueEditor(c) {
   const v = S.show.videos[c.video] || {};
+  const img = isImage(v.file);
   const val = (x) => (x === null || x === undefined ? "" : x);
   const field = (label, key, value, ph) => h("label", { class: "f" }, label,
     h("input", { "data-k": key, value: val(value), placeholder: ph || "", inputmode: ["id", "name"].includes(key) ? null : "decimal" }));
@@ -578,18 +602,19 @@ function cueEditor(c) {
     h("div", { class: "grid2" },
       field("Cue id", "id", c.id),
       field("Name", "name", c.name),
-      h("label", { class: "f" }, "Video", h("select", { "data-k": "video" },
-        Object.entries(S.show.videos).map(([id, vv]) => h("option", { value: id, selected: id === c.video }, `${vv.title || id} [${id}]`)))),
-      field("Start at (s)", "start_at", c.start_at, `video in point: ${v.in_point ?? 0}`),
-      field("Fade in (s)", "fade_in", c.fade_in, `video: ${v.fade_in ?? "-"}`),
-      field("Fade out (s)", "fade_out", c.fade_out, `video: ${v.fade_out ?? "-"}`),
-      h("label", { class: "f" }, "At end", h("select", { "data-k": "end" },
+      h("label", { class: "f" }, "Video / image", h("select", { "data-k": "video" },
+        Object.entries(S.show.videos).map(([id, vv]) => h("option", { value: id, selected: id === c.video }, `${isImage(vv.file) ? "[image] " : ""}${vv.title || id} [${id}]`)))),
+      img ? null : field("Start at (s)", "start_at", c.start_at, `video in point: ${v.in_point ?? 0}`),
+      field("Fade in (s)", "fade_in", c.fade_in, `${img ? "image" : "video"}: ${v.fade_in ?? "-"}`),
+      field("Fade out (s)", "fade_out", c.fade_out, `${img ? "image" : "video"}: ${v.fade_out ?? "-"}`),
+      img ? null : h("label", { class: "f" }, "At end", h("select", { "data-k": "end" },
         h("option", { value: "", selected: !c.end }, `inherit (${v.end || "black"})`),
         ["black", "hold", "loop"].map((m) => h("option", { value: m, selected: c.end === m }, m)))),
-      field("Pause points (s, comma sep.)", "pause_points", c.pause_points ? c.pause_points.join(", ") : "",
+      img ? null : field("Pause points (s, comma sep.)", "pause_points", c.pause_points ? c.pause_points.join(", ") : "",
         `inherit: ${(v.pause_points || []).join(", ") || "none"}`)),
-    h("label", { class: "inline small muted" }, h("input", { type: "checkbox", "data-k": "pp_none", checked: !!(c.pause_points && !c.pause_points.length) }),
-      "no pause points for this cue (override video's)"),
+    img ? h("p", { class: "muted small" }, "Image cue: fades in, stays until the next cue, fades out on Fade out.")
+      : h("label", { class: "inline small muted" }, h("input", { type: "checkbox", "data-k": "pp_none", checked: !!(c.pause_points && !c.pause_points.length) }),
+        "no pause points for this cue (override video's)"),
     h("div", { class: "row" },
       h("button", { class: "primary", onclick: () => saveCue(c, ed) }, "Save"),
       h("button", { onclick: () => { S.editCue = null; renderCues(); } }, "Cancel"),

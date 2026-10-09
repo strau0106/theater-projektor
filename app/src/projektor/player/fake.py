@@ -1,7 +1,8 @@
 """Deterministic fake player for tests and headless runs.
 
 Time only moves when `advance(seconds)` is called (or, with `realtime=True` and a GLib
-loop, from a timer). Simulates fades, pause points, out points, end modes and errors.
+loop, from a timer). Simulates fades, pause points, out points, end modes, still images
+(duration 0: end of stream right after the start, always held) and errors.
 """
 
 from __future__ import annotations
@@ -153,7 +154,7 @@ class FakePlayer(Player):
             self._emit_error(msg)
             return
         self._clip = clip
-        self._dur = self.durations.get(name, self.default_duration)
+        self._dur = 0.0 if clip.image else self.durations.get(name, self.default_duration)
         self._pos = clip.start_at
         self._pp = self._next_pps(clip.start_at)
         if clip.fade_in > 0:
@@ -166,7 +167,7 @@ class FakePlayer(Player):
 
     def pause(self) -> None:
         self.calls.append(("pause",))
-        if self._clip is None or self._holding or self._paused:
+        if self._clip is None or self._holding or self._paused or self._clip.image:
             return
         self._paused = "manual"
         self._update()
@@ -195,7 +196,7 @@ class FakePlayer(Player):
 
     def seek(self, seconds: float) -> None:
         self.calls.append(("seek", seconds))
-        if self._clip is None:
+        if self._clip is None or self._clip.image:
             return
         lo = self._clip.in_point
         t = max(lo, min(float(seconds), self._end()))

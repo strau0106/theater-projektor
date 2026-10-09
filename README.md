@@ -1,14 +1,15 @@
 # Theater-Projektor
 
 Battery-powered, cable-free video projector for the stage: a Raspberry Pi 4/5 on a
-powerbank plays videos on a battery beamer via HDMI. QLab controls it over WiFi (OSC)
+powerbank plays videos and still images on a battery beamer via HDMI. QLab controls it over WiFi (OSC)
 and/or over LoRa radio as a fallback. Videos and the cue list are managed in a web UI;
 backups and remote maintenance go through a server (`infmk1`).
 
 - Status screen on the beamer from boot until the first show command (WiFi, IP, LoRa,
   tunnel state), then black.
 - Cues with fades, pause points (stop at a frame, continue with GO), hold/loop/black at
-  the end.
+  the end. Image cues (JPEG/PNG/WebP) fade in, stay until the next cue and fade out on
+  `/proj/fadeout`, with per-image / per-cue fade times.
 - WiFi: known networks with priorities, retry every 15 s, fallback hotspot
   `projektor-XXXX` (web UI at <http://10.42.0.1/>).
 - Remote: reverse SSH tunnel to infmk1, rsync backup/restore of media + show.
@@ -149,8 +150,9 @@ Run the hardware checklist **[docs/bench-test.md](docs/bench-test.md)** after ev
 new image (boot, WiFi, hotspot, every OSC command, LoRa, upload, backup, tunnel, power
 loss, battery runtime, beamer switched on late).
 
-## Preparing videos
+## Preparing videos and images
 
 Convert clips to the Pi-optimal format (H.264 High, 1080p, CFR, keyframe every 0.5 s) with
 `projektor-prepare *.mov -o prepared/ --upload http://projektor.local --password-file pw.txt`.
-The Videos tab shows a "prepared" tag. Details: [docs/videos.md](docs/videos.md).
+The Media tab shows a "prepared" tag. Images given to the same tool are rotated upright and
+shrunk to fit 1920x1080. Details: [docs/videos.md](docs/videos.md).

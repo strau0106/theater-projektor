@@ -202,3 +202,69 @@ def test_fade_curve_controller_no_jump(gplayer, clip_path):
     gplayer.fadeout(1.0)
     assert abs(gplayer._alpha() - a) < 0.15
     assert run_until(lambda: gplayer.state == "idle", 4)
+
+
+def _exif_orient(jpeg: bytes, orientation: int) -> bytes:
+    """Insert a minimal EXIF APP1 segment (IFD0 Orientation) after the JPEG SOI marker."""
+    import struct
+
+    tiff = (b"II*\x00" + struct.pack("<I", 8) + struct.pack("<H", 1)
+            + struct.pack("<HHIHH", 0x0112, 3, 1, orientation, 0) + struct.pack("<I", 0))
+    app1 = b"Exif\x00\x00" + tiff
+    return jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1 + jpeg[2:]
+
+
+@pytest.fixture(scope="module")
+def image_paths(tmp_path_factory):
+    d = tmp_path_factory.mktemp("images")
+    png, raw = d / "white.png", d / "raw.jpg"
+    for enc, out, w, h in (("pngenc", png, 640, 480), ("jpegenc", raw, 400, 300)):
+        subprocess.run(["gst-launch-1.0", "-q", "videotestsrc", "pattern=white", "num-buffers=1", "!",
+                        f"video/x-raw,width={w},height={h}", "!", "videoconvert", "!", enc, "!",
+                        "filesink", f"location={out}"], check=True, timeout=30)
+    rotated = d / "rotated.jpg"
+    rotated.write_bytes(_exif_orient(raw.read_bytes(), 6))  # 6 = rotate 90° clockwise
+    return {"png": png, "rotated": rotated}
+
+
+def _clip_caps(player):
+    caps = player._run.sinkpad.get_current_caps()
+    st = caps.get_structure(0)
+    return st.get_int("width")[1], st.get_int("height")[1]
+
+
+def test_image_fade_in_hold_fade_out(gplayer, image_paths):
+    gplayer.play(Clip("img", image_paths["png"], fade_in=0.4, fade_out=0.4, end="hold", image=True))
+    assert gplayer.state == "fading_in"
+    assert run_until(lambda: gplayer.state == "holding", 10), gplayer.events
+    assert brightest(gplayer) > 200  # white image on screen
+    time.sleep(0.3)
+    run_until(lambda: False, 0.1)
+    assert gplayer.state == "holding" and brightest(gplayer) > 200  # still there
+    w, h = _clip_caps(gplayer)
+    assert (w, h) == (240, 180)  # 640x480 fitted into the 320x180 display, aspect kept
+    gplayer.pause()
+    gplayer.seek(1.0)
+    assert gplayer.state == "holding"  # pause / seek don't apply to images
+    gplayer.fadeout(0.4)
+    assert gplayer.state == "fading_out"
+    assert run_until(lambda: gplayer.state == "idle", 5)
+    assert brightest(gplayer) < 40
+    states = [s for s, _ in gplayer.events["states"]]
+    assert states == ["fading_in", "holding", "fading_out", "idle"], states
+    assert gplayer.events["errors"] == []
+
+
+def test_image_exif_orientation_and_preload(gplayer, image_paths):
+    clip = Clip("rot", image_paths["rotated"], fade_in=0.0, end="hold", image=True)
+    gplayer.prepare(clip)
+    if gplayer.kind != "fakesink":
+        assert run_until(lambda: gplayer._prep.phase == "ready", 10)
+    gplayer.play(clip)
+    assert run_until(lambda: gplayer.state == "holding", 10), gplayer.events
+    w, h = _clip_caps(gplayer)
+    assert h == 180 and w < h, (w, h)  # 400x300 rotated to portrait 300x400, fitted to height 180
+    assert brightest(gplayer) > 200
+    gplayer.stop()
+    assert gplayer.state == "idle"
+    assert gplayer.events["errors"] == []

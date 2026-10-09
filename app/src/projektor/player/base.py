@@ -8,6 +8,7 @@ Player state machine (mirrors ARCHITECTURE.md §5):
 
     idle -> fading_in -> playing <-> paused(manual|pause_point) -> fading_out -> idle
     end of video: end=black -> idle, end=hold -> holding, end=loop -> keeps playing
+    still image (clip.image): one frame, always end=hold -> holding after its fade-in
 """
 
 from __future__ import annotations
@@ -69,10 +70,10 @@ def compute_state(
         return "fading_out", None
     if paused:
         return "paused", paused
+    if fade_dir > 0:  # before holding: an image (or a clip shorter than its fade) ends mid-fade
+        return "fading_in", None
     if holding:
         return "holding", None
-    if fade_dir > 0:
-        return "fading_in", None
     return "playing", None
 
 

@@ -1,4 +1,4 @@
-# Preparing videos
+# Preparing videos and images
 
 Upload clips that were converted with `projektor-prepare`. The web UI marks them with a green
 "prepared" tag; other clips show warnings if they are likely to misbehave on the Pi.
@@ -42,6 +42,29 @@ Upload clips that were converted with `projektor-prepare`. The web UI marks them
 Files that already carry the marker are skipped (and still uploaded with `--upload`); use `--force`
 to re-encode. If the output is the input file name, `.prepared.mp4` is used. See
 `projektor-prepare --help` for `--fps`, `--height`, `--gop-s`, `--crf`, `--preset`, `--keep-audio`.
+
+## Images
+
+Still images (JPEG, PNG, WebP) are cues like videos: upload them in the Media tab, put them in
+the cue list. An image fades in over its `fade_in` when its cue runs, stays on screen until the
+next cue or `stop`, and fades out over its `fade_out` on `/proj/fadeout` (or the web Fade out
+button). Both times are set per image and can be overridden per cue. In/out points, pause points,
+`start_at` and the end mode do not apply to images.
+
+The Pi decodes an image in software each time it is shown, so a large camera photo starts later.
+It also applies the EXIF orientation and shrinks the picture to the display size itself, but
+preparing images first makes cues start faster:
+
+    projektor-prepare IMG_*.jpg poster.png -o prepared/ --upload http://projektor.local --password-file pw.txt
+
+- EXIF orientation applied (portrait phone photos come out upright), metadata stripped
+- shrunk to fit 1920x1080 (16:9 box of `--height`), never upscaled, aspect ratio kept
+- output `<name>.jpg` (high quality JPEG); PNG inputs stay PNG (lossless, keeps transparency,
+  transparent areas show black). HEIC, TIFF, BMP, GIF, AVIF, WebP inputs become JPEG (HEIC/AVIF need
+  an ffmpeg build that can decode them)
+- an existing output is skipped unless `--force`
+
+The web UI warns about images larger than 1920x1080 and about formats the projector can't show.
 
 ## ffprobe on the Pi
 
