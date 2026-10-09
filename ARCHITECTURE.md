@@ -138,8 +138,12 @@ Process model inside `projektor run`:
   the normal mixer alpha fades. playbin3 `video-filter` for images: `videoconvert ! videoflip
   video-direction=auto` (EXIF orientation) `! videoscale` to fit into display W x H (never upscaled;
   the GL mixer scales up on the GPU; keeps the texture below the Pi's 4096 px GL limit). Software
-  decode (one frame): a large photo takes noticeably longer to start; `projektor-prepare` shrinks
-  images to the display size beforehand. In/out points, pause points, `start_at`, `end`, `seek` and
+  decode (one frame; `v4l2jpegdec` is kept out of autoplugging because the Pi 4 hardware JPEG
+  decoder never outputs a lone still): Pi 4 measured ~150 ms GO → picture for a 1080p JPEG/PNG,
+  ~500 ms for a 12 MP photo; `projektor-prepare` shrinks images to the display size beforehand.
+- Letterboxing (GL): the video pad's rectangle (xpos/ypos/width/height, sizing-policy none) is
+  computed by the player for every new input size/PAR. glvideomixer's own keep-aspect-ratio box
+  is computed once and was kept across caps changes (portrait image after a 16:9 clip stretched). In/out points, pause points, `start_at`, `end`, `seek` and
   `pause` do not apply to images (ignored).
 
 ## 5. OSC command set

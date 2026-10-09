@@ -268,3 +268,32 @@ def test_image_exif_orientation_and_preload(gplayer, image_paths):
     gplayer.stop()
     assert gplayer.state == "idle"
     assert gplayer.events["errors"] == []
+
+
+def test_v4l2_jpeg_decoder_not_autoplugged():
+    # Pi 4: v4l2jpegdec never outputs a single still image (image clips would never preroll)
+    import projektor.player.gst as g
+
+    for name in g._NO_AUTOPLUG:
+        f = Gst.Registry.get().lookup_feature(name)
+        assert f is None or f.get_rank() == Gst.Rank.NONE
+
+
+def _content_x(player):
+    """First and last column with picture content (letterbox / pillarbox bars are black)."""
+    f = frame(player)
+    w, h = 320, 180
+    cols = [x for x in range(w) if any(f[y * w + x] > 40 for y in range(0, h, 3))]
+    return cols[0], cols[-1]
+
+
+def test_letterbox_follows_input_aspect(gplayer, image_paths):
+    # glvideomixer kept its first keep-aspect box: a portrait picture after a 4:3 one was stretched
+    if gplayer.kind == "fakesink":
+        pytest.skip("GL mixer geometry")
+    for path, want in ((image_paths["png"], (40, 279)), (image_paths["rotated"], (92, 227)),
+                       (image_paths["png"], (40, 279))):
+        gplayer.play(Clip("i", path, fade_in=0.0, end="hold", image=True))
+        assert run_until(lambda: gplayer.state == "holding", 10)
+        lo, hi = _content_x(gplayer)
+        assert abs(lo - want[0]) <= 2 and abs(hi - want[1]) <= 2, (path.name, lo, hi)

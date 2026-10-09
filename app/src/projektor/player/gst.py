@@ -95,6 +95,15 @@ log = logging.getLogger(__name__)
 if not Gst.is_initialized():
     Gst.init(None)
 
+# The Pi 4 hardware JPEG decoder (v4l2jpegdec, rank primary+1) never outputs a lone still
+# image: it waits for more input, so an image clip never prerolls (black, stuck in
+# fading_in). Keep it out of autoplugging; software jpegdec decodes one picture quickly.
+_NO_AUTOPLUG = ("v4l2jpegdec",)
+for _name in _NO_AUTOPLUG:
+    _feature = Gst.Registry.get().lookup_feature(_name)
+    if _feature is not None:
+        _feature.set_rank(Gst.Rank.NONE)
+
 # playbin3 flags: video (0x1) | native-video (0x40) -> no audio decoding, no extra converters
 _PLAYBIN_FLAGS = 0x1 | 0x40
 _PP_TOLERANCE = 0.001  # s; frame pts rounding
@@ -150,6 +159,7 @@ class _Display:
         self._text = None
         self.vsrc: Gst.Element | None = None  # GL: appsrc fed by the clip pipeline
         self._vseg: Gst.Segment | None = None  # GL: maps clip timestamps to display time
+        self._vsize: tuple | None = None  # GL: (width, height, PAR) of the frames on the video pad
         self._held: deque[Gst.Buffer] = deque(maxlen=_HELD_FRAMES)
         self._bus_watch = False
         self.alpha = 0.0
@@ -215,7 +225,9 @@ class _Display:
             self._video_pad.set_property("zorder", 1)
             self._video_pad.set_property("width", W)
             self._video_pad.set_property("height", H)
-            self._video_pad.set_property("sizing-policy", 1)  # keep-aspect-ratio (letterbox)
+            # letterbox rectangle set explicitly per input size (_refit_video_pad), see there
+            self._video_pad.set_property("sizing-policy", 0)  # none
+            self._vsize = None
             self.vsrc = p.get_by_name("vsrc")
         else:
             self._balance = p.get_by_name("bal")
@@ -344,6 +356,35 @@ class _Display:
         # overwrite a frame that is still on screen (paused / held clip).
         self._held.append(buf)
         src.emit("push-sample", Gst.Sample.new(buf, caps, seg, None))
+        st = caps.get_structure(0)
+        size = (st.get_int("width")[1], st.get_int("height")[1], tuple(st.get_fraction("pixel-aspect-ratio")[1:]))
+        if size != self._vsize:
+            self._vsize = size
+            self._refit_video_pad(*size)
+
+    def _refit_video_pad(self, w: int, h: int, par: tuple) -> None:
+        """GL: letterbox / pillarbox the video pad for input frames of w x h (PAR par).
+
+        glvideomixer's sizing-policy keep-aspect-ratio computes its box once and keeps it
+        when the pad's caps change: a portrait image (or a 4:3 clip) after a 16:9 clip was
+        stretched to the old box. So the rectangle is computed here for every new input
+        size. A new clip starts at alpha 0, so the old clip's last frame in the new
+        rectangle is never visible.
+        """
+        pad = self._video_pad
+        if pad is None or w <= 0 or h <= 0:
+            return
+        num, den = par if len(par) == 2 and par[0] > 0 and par[1] > 0 else (1, 1)
+        dar = w * num / (h * den)
+        W, H = self.width, self.height
+        if dar >= W / H:
+            ow, oh = W, max(1, round(W / dar))
+        else:
+            ow, oh = max(1, round(H * dar)), H
+        pad.set_property("xpos", (W - ow) // 2)
+        pad.set_property("ypos", (H - oh) // 2)
+        pad.set_property("width", ow)
+        pad.set_property("height", oh)
 
     def release_video(self) -> None:
         """GL: make the mixer drop the frame it holds (video alpha must be 0)."""
