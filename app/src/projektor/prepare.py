@@ -17,6 +17,10 @@ shrunk to fit max 16:9 x ``--height`` (default 1920x1080, never upscaled), metad
 stripped. Output ``<stem>.jpg`` (high quality JPEG), or ``<stem>.png`` for PNG inputs
 (lossless, keeps transparency; transparent areas show black on the projector).
 
+Inputs may be folders: they are searched recursively for videos and images
+(``expand_inputs``; hidden files and ``prepared`` folders are skipped). A single folder
+without ``-o`` writes to ``<folder>/prepared/``.
+
 Standard library only (no projektor imports), so it can also run straight from a
 checkout: ``python3 app/src/projektor/prepare.py`` / ``app/scripts/prepare-video.sh``.
 Optional upload to the projector: ``--upload http://projektor.local`` (password
@@ -59,6 +63,10 @@ HEVC_LEVEL = "4.1"
 IMAGE_INPUT_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff",
                               ".heic", ".heif", ".avif"})
 JPEG_QSCALE = 2  # ffmpeg mjpeg -q:v, 2 = best practical quality
+# Video inputs picked up when a folder is given (files named explicitly are always tried).
+VIDEO_INPUT_EXTS = frozenset({".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts",
+                              ".mpg", ".mpeg", ".mxf", ".wmv", ".flv", ".3gp", ".h264", ".h265"})
+PREPARED_DIR = "prepared"
 
 
 class PrepareError(Exception):
@@ -327,6 +335,30 @@ def output_path(src: Path, outdir: Optional[Path] = None) -> Path:
 
 def is_image_file(path: Path) -> bool:
     return Path(path).suffix.lower() in IMAGE_INPUT_EXTS
+
+
+def expand_inputs(names: list[str]) -> list[Path]:
+    """Files as given; folders searched recursively for videos and images (sorted per folder),
+    skipping hidden files/folders and ``prepared`` folders (earlier output)."""
+    out: list[Path] = []
+    for name in names:
+        p = Path(name)
+        if not p.is_dir():
+            out.append(p)  # missing files are reported when processed
+            continue
+        found = []
+        for root, dirs, files in os.walk(p):
+            dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != PREPARED_DIR)
+            for f in files:
+                ext = Path(f).suffix.lower()
+                if not f.startswith(".") and (ext in IMAGE_INPUT_EXTS or ext in VIDEO_INPUT_EXTS):
+                    found.append(Path(root) / f)
+        out.extend(sorted(found, key=lambda f: str(f).lower()))
+    return out
+
+
+def planned_output(src: Path, outdir: Optional[Path] = None) -> Path:
+    return image_output_path(src, outdir) if is_image_file(src) else output_path(src, outdir)
 
 
 def image_output_path(src: Path, outdir: Optional[Path] = None) -> Path:
@@ -637,8 +669,10 @@ def _parser() -> argparse.ArgumentParser:
         epilog="Password for --upload: --password-file FILE or env PROJEKTOR_PASSWORD. "
         "Details: docs/videos.md",
     )
-    p.add_argument("inputs", nargs="+", metavar="INPUT", help="video and/or image file(s)")
-    p.add_argument("-o", "--outdir", help="output directory (default: next to the input)")
+    p.add_argument("inputs", nargs="+", metavar="INPUT",
+                   help="video and/or image files, or folders (searched recursively for videos and images)")
+    p.add_argument("-o", "--outdir", help="output directory (default: next to the input; "
+                   f"for a single folder: <folder>/{PREPARED_DIR})")
     p.add_argument("--fps", type=parse_fps_option, default="auto",
                    help="output frame rate: auto (default: keep 24/25/30, halve 50/60, else 30), keep, or a number")
     p.add_argument("--height", type=int, default=1080, help="maximum height (default 1080; width max 16:9 of it)")
@@ -683,15 +717,27 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
     outdir = Path(args.outdir) if args.outdir else None
+    if outdir is None and len(args.inputs) == 1 and Path(args.inputs[0]).is_dir():
+        outdir = Path(args.inputs[0]) / PREPARED_DIR
+    inputs = expand_inputs(args.inputs)
+    if not inputs:
+        print(f"no videos or images found in {' '.join(args.inputs)}", file=sys.stderr)
+        return 1
+    if len(inputs) != len(args.inputs) or any(Path(a).is_dir() for a in args.inputs):
+        print(f"{len(inputs)} file(s)" + (f" -> {outdir}" if outdir else ""))
     if outdir and not args.dry_run:
         outdir.mkdir(parents=True, exist_ok=True)
 
     failed = 0
-    n = len(args.inputs)
-    for i, name in enumerate(args.inputs, 1):
-        src = Path(name)
+    n = len(inputs)
+    planned: dict[Path, Path] = {}  # output -> input, catches e.g. a.heic + a.jpg -> a.jpg
+    for i, src in enumerate(inputs, 1):
         tag = f"[{i}/{n}] {src.name}"
         try:
+            dst = planned_output(src, outdir)
+            other = planned.setdefault(dst, src)
+            if other != src:
+                raise PrepareError(f"output {dst.name} is also written for {other} - rename one of them")
             result = _process_one(src, outdir, opts, args, ffprobe, tag)
             if result and uploader:
                 if args.dry_run:

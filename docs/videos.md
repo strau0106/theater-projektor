@@ -38,9 +38,15 @@ Upload clips that were converted with `projektor-prepare`. The web UI marks them
     projektor-prepare *.mov -o prepared/ --upload http://projektor.local --password-file pw.txt
     projektor-prepare clip.mov --codec hevc          # Pi 5
     projektor-prepare clip.mov --dry-run             # print the ffmpeg command only
+    projektor-prepare ~/Show/Medien                  # whole folder -> ~/Show/Medien/prepared/
 
 Files that already carry the marker are skipped (and still uploaded with `--upload`); use `--force`
-to re-encode. If the output is the input file name, `.prepared.mp4` is used. See
+to re-encode. If the output is the input file name, `.prepared.mp4` is used.
+
+Folders are searched recursively for videos and images (hidden files and `prepared/` folders are
+skipped, so re-running on the same folder is safe). With a single folder and no `-o`, the results go
+to `<folder>/prepared/`. Two inputs that would produce the same output name (e.g. `a.heic` and
+`a.jpg` -> `a.jpg`) are reported as an error; rename one. See
 `projektor-prepare --help` for `--fps`, `--height`, `--gop-s`, `--crf`, `--preset`, `--keep-audio`.
 
 ## Images
@@ -56,6 +62,7 @@ It also applies the EXIF orientation and shrinks the picture to the display size
 preparing images first makes cues start faster:
 
     projektor-prepare IMG_*.jpg poster.png -o prepared/ --upload http://projektor.local --password-file pw.txt
+    projektor-prepare ~/Show/Bilder                  # all images (and videos) -> ~/Show/Bilder/prepared/
 
 - EXIF orientation applied (portrait phone photos come out upright), metadata stripped
 - shrunk to fit 1920x1080 (16:9 box of `--height`), never upscaled, aspect ratio kept

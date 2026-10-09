@@ -262,3 +262,35 @@ def test_prepare_images_end_to_end(tmp_path, capsys):
     # second run: outputs exist -> skipped
     assert main([str(photo), "-o", str(out)]) == 0
     assert "exists, skipping" in capsys.readouterr().out
+
+
+def test_expand_inputs(tmp_path):
+    from projektor.prepare import expand_inputs
+
+    for rel in ["show/b.JPG", "show/a.png", "show/sub/c.heic", "show/clip.mov", "show/notes.txt",
+                "show/.hidden.jpg", "show/prepared/old.jpg", "show/.cache/x.png"]:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+    got = expand_inputs([str(tmp_path / "show"), str(tmp_path / "missing.jpg")])
+    rel = [str(p.relative_to(tmp_path)) for p in got]
+    assert rel == ["show/a.png", "show/b.JPG", "show/clip.mov", "show/sub/c.heic", "missing.jpg"]
+
+
+@pytest.mark.skipif(not HAVE_FF, reason="ffmpeg not installed")
+def test_prepare_folder(tmp_path, capsys):
+    from projektor.prepare import main
+
+    show = tmp_path / "Bilder"
+    (show / "Akt 2").mkdir(parents=True)
+    _ffmpeg_image(show / "poster.png", "2560x1440")
+    _ffmpeg_image(show / "Akt 2" / "szene 1.jpg", "640x480")
+    _ffmpeg_image(show / "Akt 2" / "poster.webp", "320x240")  # -> poster.jpg: no collision with poster.png
+    _ffmpeg_image(show / "Akt 2" / "szene 1.bmp", "320x240")  # -> szene 1.jpg: collides
+    (show / "prepared").mkdir()
+    _ffmpeg_image(show / "prepared" / "old.jpg", "320x240")  # earlier output: ignored
+    assert main([str(show)]) == 1  # one error (the collision), the rest done
+    out = capsys.readouterr()
+    assert "4 file(s) -> " in out.out and "also written for" in out.err
+    assert sorted(p.name for p in (show / "prepared").iterdir()) == ["old.jpg", "poster.jpg", "poster.png", "szene 1.jpg"]
+    assert not (show / "prepared" / "prepared").exists()
