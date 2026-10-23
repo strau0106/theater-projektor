@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { LollipopSeal } from "./LollipopSeal";
 import { usePoll } from "@/components/usePoll";
 import { withBase } from "@/lib/base";
 import { QUESTION } from "@/design/tokens";
 
-type Status = { poll_id: number; status: "open" | "closed" | "none"; voted: boolean };
+type Status = { poll_id: number; status: "open" | "closed" | "none"; voted: boolean; choice: "ja" | "nein" | null; code: string | null };
 
 export function VoteClient({ preview }: { preview: boolean }) {
   const { data, refresh } = usePoll<Status>("/api/vote", 4000);
@@ -32,7 +33,8 @@ export function VoteClient({ preview }: { preview: boolean }) {
   let body;
   if (!data) body = <p className="note">Lädt …</p>;
   else if (data.status === "none") body = <Note title="Abstimmung noch nicht gestartet" text="Bitte einen Moment Geduld." />;
-  else if (data.status === "closed") body = <Note title="Abstimmung beendet" text="Danke fürs Mitmachen." />;
+  else if (data.status === "closed" && !(data.voted && data.choice === "ja" && data.code)) body = <Note title="Abstimmung beendet" text="Danke fürs Mitmachen." />;
+  else if (data.voted && data.choice === "ja" && data.code) body = <LollipopSeal poll={data.poll_id} code={data.code} />;
   else if (data.voted) body = <Note title="Danke!" text="Deine Stimme wurde gezählt." />;
   else
     body = (

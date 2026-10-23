@@ -100,3 +100,24 @@ a { color: var(--blue-deep); }
   .panel.wide { grid-column: span 2; }
   .grid { grid-template-columns: 1fr 1fr 1fr; }
 }
+
+/* lollipop confirmation: live-proof animation (reduced motion only slows it down, it must keep moving) */
+.lolli { --spd: 1; text-align: center; }
+.lolli .state-title { font-size: clamp(1.7rem, 7.2vw, 2.1rem); text-align: left; }
+.seal-wrap { width: min(66vw, 280px); margin: 20px auto 8px; }
+.seal { display: block; width: 100%; height: auto; overflow: visible; }
+.seal-spin, .seal-spin-rev, .seal-pulse { transform-box: view-box; transform-origin: 100px 100px; }
+.seal-spin { animation: seal-rot calc(24s * var(--spd)) linear infinite; }
+.seal-spin-rev { animation: seal-rot calc(14s * var(--spd)) linear infinite reverse; }
+.seal-pulse { animation: seal-pulse calc(3s * var(--spd)) ease-in-out infinite; }
+.seal-wave { animation: seal-wave calc(2.4s * var(--spd)) linear infinite; }
+@keyframes seal-rot { to { transform: rotate(360deg); } }
+@keyframes seal-pulse { 50% { transform: scale(1.05); } }
+@keyframes seal-wave { to { transform: translateX(-80px); } }
+.lolli-clock {
+  margin: 6px 0 0; font-family: var(--font-display), Impact, sans-serif; font-size: 3rem; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.04em;
+}
+.lolli-code { display: flex; align-items: baseline; justify-content: center; gap: 14px; margin: 10px 0 0; font-weight: 700; }
+.lolli-code strong { font-size: 2.6rem; letter-spacing: 0.18em; background: var(--navy); color: var(--cream); padding: 2px 8px 2px 14px; }
+@media (prefers-reduced-motion: reduce) { .lolli { --spd: 3; } }

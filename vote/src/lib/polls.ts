@@ -53,6 +53,13 @@ export function hasVoted(voter: string): boolean {
   return !!p && !!db().prepare("SELECT 1 FROM votes WHERE poll_id = ? AND voter_id = ?").get(p.id, voter);
 }
 
+export function voteOf(voter: string): Choice | null {
+  const p = current();
+  if (!p) return null;
+  const r = db().prepare("SELECT choice FROM votes WHERE poll_id = ? AND voter_id = ?").get(p.id, voter) as { choice: Choice } | undefined;
+  return r?.choice ?? null;
+}
+
 export type VoteOutcome = "ok" | "duplicate" | "closed";
 
 export function castVote(voter: string, choice: Choice): VoteOutcome {
