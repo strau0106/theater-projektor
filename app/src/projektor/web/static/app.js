@@ -582,11 +582,11 @@ function renderCues() {
     const ov = [];
     for (const k of img ? ["fade_in", "fade_out"] : ["start_at", "fade_in", "fade_out", "end"]) if (c[k] !== null && c[k] !== undefined) ov.push(`${k.replace("_", " ")}: ${c[k]}`);
     if (c.pause_points && !img) ov.push(`pauses: ${c.pause_points.map(fmtTime).join(", ") || "none"}`);
-    const item = h("div", { class: "item" },
+    const item = h("div", { class: "item", "data-id": c.id },
       h("div", { class: "row" },
-        h("div", { class: "row", style: "gap:4px" },
-          h("button", { class: "small", disabled: i === 0, title: "move up", onclick: () => moveCue(i, -1) }, "▲"),
-          h("button", { class: "small", disabled: i === cues.length - 1, title: "move down", onclick: () => moveCue(i, 1) }, "▼")),
+        h("button", { class: "small handle", title: "Drag to reorder (Alt+Up / Alt+Down on keyboard)",
+          "aria-label": `Reorder cue ${c.id}: drag, or Alt+Up / Alt+Down`,
+          onpointerdown: (e) => dragStart(e, item), onkeydown: (e) => handleKey(e, c.id) }, "⠿"),
         h("div", { class: "grow" },
           h("div", { class: "title" }, `#${i + 1}  `, h("span", { class: "muted" }, `id ${c.id}`), "  ", c.name || "(unnamed)"),
           h("div", { class: "sub" }, res ? "results graph (audience vote)" : v ? `${img ? "image: " : ""}${v.title || c.video} [${c.video}]` : `missing video ${c.video}`, ov.length ? " - " + ov.join(" - ") : "")),
@@ -664,13 +664,82 @@ async function deleteCue(c) {
   if (r) { S.editCue = null; await loadShow(); renderCues(); }
 }
 
-async function moveCue(i, dir) {
+// Persist a new cue order (ids stay, only positions change). Optimistic, rolls back on error.
+async function reorderCues(ids, focusId) {
+  const old = S.show.cues;
+  const byId = new Map(old.map((c) => [c.id, c]));
+  if (ids.length === old.length && ids.every((x, i) => x === old[i].id)) return;
+  S.show.cues = ids.map((x) => byId.get(x));
+  renderCues();
+  if (focusId) focusHandle(focusId);
+  const r = await act(() => api("POST", "/api/cues/reorder", { order: ids }), "order saved");
+  if (!r) { S.show.cues = old; renderCues(); if (focusId) focusHandle(focusId); }
+}
+
+function focusHandle(id) {
+  const el = [...$("cueList").children].find((n) => n.dataset.id === id);
+  const b = el && el.querySelector(".handle");
+  if (b) b.focus();
+}
+
+function handleKey(e, id) {
+  if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+  e.preventDefault();
   const ids = S.show.cues.map((c) => c.id);
-  const j = i + dir;
+  const i = ids.indexOf(id), j = i + (e.key === "ArrowUp" ? -1 : 1);
   if (j < 0 || j >= ids.length) return;
-  [ids[i], ids[j]] = [ids[j], ids[i]];
-  const r = await act(() => api("POST", "/api/cues/reorder", { order: ids }));
-  if (r) { await loadShow(); renderCues(); }
+  ids.splice(j, 0, ids.splice(i, 1)[0]);
+  reorderCues(ids, id);
+}
+
+// Pointer-based drag (mouse, touch and pen with one code path). The handle has touch-action:none.
+function dragStart(e, item) {
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  const handle = e.currentTarget, box = $("cueList");
+  const id = item.dataset.id;
+  const start = S.show.cues.map((c) => c.id);
+  let target = null, after = false, lastY = e.clientY, raf = 0;
+  try { handle.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+  item.classList.add("dragging");
+  const clear = () => box.querySelectorAll(".drop-before,.drop-after").forEach((n) => n.classList.remove("drop-before", "drop-after"));
+  const locate = () => {
+    clear(); target = null;
+    const others = [...box.children].filter((n) => n !== item && n.dataset.id);
+    if (!others.length) return;
+    for (const n of others) {
+      const r = n.getBoundingClientRect();
+      if (lastY < r.top + r.height / 2) { target = n; after = false; break; }
+    }
+    if (!target) { target = others[others.length - 1]; after = true; }
+    target.classList.add(after ? "drop-after" : "drop-before");
+  };
+  const tick = () => {
+    const edge = 70, vh = window.innerHeight;
+    if (lastY < edge) window.scrollBy(0, -Math.ceil((edge - lastY) / 5));
+    else if (lastY > vh - edge) window.scrollBy(0, Math.ceil((lastY - (vh - edge)) / 5));
+    locate();
+    raf = requestAnimationFrame(tick);
+  };
+  const move = (ev) => { lastY = ev.clientY; };
+  const end = (ev) => {
+    cancelAnimationFrame(raf);
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", end);
+    handle.removeEventListener("pointercancel", end);
+    item.classList.remove("dragging");
+    if (ev.type === "pointerup") locate();
+    clear();
+    if (ev.type !== "pointerup" || !target) return;
+    const ids = start.filter((x) => x !== id);
+    let pos = ids.indexOf(target.dataset.id) + (after ? 1 : 0);
+    ids.splice(pos, 0, id);
+    reorderCues(ids, id);
+  };
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  tick();
 }
 
 $("cueAddResults").addEventListener("click", async () => {

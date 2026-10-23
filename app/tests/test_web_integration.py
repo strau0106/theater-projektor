@@ -139,3 +139,24 @@ def test_results_cue_editing_and_results_api(real):
     assert c.post("/api/design/fetch", json={}).status_code == 400  # no design_url configured
     ctrl.cue(cue["id"])
     assert player.results == (4, 5)
+
+
+def test_reorder_with_results_cue_keeps_current_and_standby(real):
+    c, ctrl, player, store = real
+    rid = c.post("/api/cues", json={"name": "Ergebnis", "type": "results"}).json()["cue"]["id"]
+    ids = [x["id"] for x in c.get("/api/cues").json()]
+    ctrl.cue(ids[0])
+    ctrl.standby(rid)
+    new = [rid] + [i for i in ids if i != rid][::-1]
+    assert c.post("/api/cues/reorder", json={"order": new}).status_code == 200
+    got = c.get("/api/cues").json()
+    assert [x["id"] for x in got] == new and got[0]["type"] == "results"
+    import time
+    for _ in range(50):  # reload runs on the controller's executor
+        st = ctrl.state()
+        if st["standby_index"] == 0:
+            break
+        time.sleep(0.05)
+    st = ctrl.state()
+    assert st["standby"] == rid and st["standby_index"] == 0
+    assert st["cue"] == ids[0] and st["cue_index"] == new.index(ids[0])

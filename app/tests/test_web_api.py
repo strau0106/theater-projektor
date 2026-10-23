@@ -283,6 +283,34 @@ def test_cue_crud_and_reorder(env):
     assert ("reload_show",) in env.ctrl.calls
 
 
+def _ids(c):
+    return [x["id"] for x in c.get("/api/cues").json()]
+
+
+def test_reorder_cues_validation(env):
+    c = env.client
+    assert c.post("/api/cues", json={"name": "Third", "video": "intro"}).status_code == 200
+    assert _ids(c) == ["1", "2", "3"]
+    before = c.get("/api/cues").json()
+    r = c.post("/api/cues/reorder", json={"order": ["3", "1", "2"]})
+    assert r.status_code == 200 and r.json()["order"] == ["3", "1", "2"]
+    after = c.get("/api/cues").json()
+    assert [x["id"] for x in after] == ["3", "1", "2"]
+    assert sorted(after, key=lambda x: x["id"]) == sorted(before, key=lambda x: x["id"])  # cues unchanged
+    for bad in (["3", "1"], ["3", "1", "1"], ["3", "1", "2", "2"], ["3", "1", "nope"], ["3", "1", "2", "9"], []):
+        assert c.post("/api/cues/reorder", json={"order": bad}).status_code == 422, bad
+    assert _ids(c) == ["3", "1", "2"]  # failed requests change nothing
+
+
+def test_reorder_cues_reloads_controller_and_keeps_standby(env):
+    c = env.client
+    env.ctrl.standby("2")
+    env.ctrl.calls.clear()
+    assert c.post("/api/cues/reorder", json={"order": ["2", "1"]}).status_code == 200
+    assert ("reload_show",) in env.ctrl.calls
+    assert env.ctrl.state()["standby"] == "2"
+
+
 # ------------------------------------------------------------------ transport / command
 
 

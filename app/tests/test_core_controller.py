@@ -307,6 +307,19 @@ def test_reload_show_keeps_standby_by_id(ctrl, store):
     assert ctrl.state()["standby"] == "3"  # old show kept
 
 
+def test_reload_reordered_keeps_current_and_standby_by_id(ctrl, store):
+    ctrl.cue(1)
+    ctrl.standby("3")
+    data = json.loads(store.path.read_text())
+    ids_before = [c["id"] for c in data["cues"]]
+    data["cues"].reverse()
+    store.path.write_text(json.dumps(data))
+    ctrl.reload_show()
+    st = ctrl.state()
+    assert st["standby"] == "3" and st["standby_index"] == ids_before[::-1].index("3")
+    assert st["cue"] == "1"
+
+
 def test_reload_removed_standby_clamps(ctrl, store):
     ctrl.standby("finale")
     data = json.loads(store.path.read_text())
