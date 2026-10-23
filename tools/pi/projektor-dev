@@ -9,7 +9,7 @@ case "$1" in
             tar -C "$SP" -xzf /tmp/projektor-src.tgz && rm -f /tmp/projektor-src.tgz
             systemctl restart projektor && echo deployed ;;
   restart|stop|start) systemctl "$1" projektor; echo "$1: $(systemctl is-active projektor)" ;;
-  snapshot) systemctl kill -s USR1 projektor; sleep 2; base64 -w0 /var/lib/projektor/snapshot.png ;;
+  snapshot) systemctl kill --kill-whom=main -s USR1 projektor; sleep 2; base64 -w0 /var/lib/projektor/snapshot.png ;;
   stats)    P=$(pidof_app)
             echo "pid=$P rss_kb=$(awk '/VmRSS/{print $2}' /proc/$P/status) fds=$(ls /proc/$P/fd | wc -l)" \
                  "threads=$(ls /proc/$P/task | wc -l) cpu_ticks=$(awk '{print $14+$15}' /proc/$P/stat)" \
