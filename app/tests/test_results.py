@@ -108,11 +108,11 @@ class Site:
 
 def _bundle_files(version="v1", svg: bytes | None = None, font: bytes | None = None) -> dict[str, bytes]:
     svg = svg if svg is not None else (DEFAULT_DIR / "template.svg").read_bytes()
-    font = font if font is not None else (DEFAULT_DIR / "fonts" / "Arimo-Bold.ttf").read_bytes()
+    font = font if font is not None else (DEFAULT_DIR / "fonts" / "LiberationSans-Bold.ttf").read_bytes()
     man = {"version": version, "width": 1920, "height": 1080, "template": "design/template.svg",
-           "fonts": [{"family": "Arimo", "file": "Arimo-Bold.ttf", "url": "design/fonts/Arimo-Bold.ttf"}]}
+           "fonts": [{"family": "Liberation Sans", "file": "LiberationSans-Bold.ttf", "url": "design/fonts/LiberationSans-Bold.ttf"}]}
     return {"/welle/api/design": json.dumps(man).encode(), "/welle/api/design/template.svg": svg,
-            "/welle/api/design/fonts/Arimo-Bold.ttf": font}
+            "/welle/api/design/fonts/LiberationSans-Bold.ttf": font}
 
 
 @pytest.fixture
@@ -135,7 +135,7 @@ def test_design_fetch_installs_and_skips_same_version(tmp_path, site):
     assert store.load().source == "default"
     assert store.fetch(s.base + "/welle/api/design") == ("v1", True)
     d = store.load()
-    assert d.source == "cache" and d.version == "v1" and (tmp_path / "design" / "fonts" / "Arimo-Bold.ttf").is_file()
+    assert d.source == "cache" and d.version == "v1" and (tmp_path / "design" / "fonts" / "LiberationSans-Bold.ttf").is_file()
     assert DesignStore(tmp_path).load().version == "v1"  # survives a restart
     n = s.hits["/welle/api/design/template.svg"]
     assert store.fetch(s.base + "/welle/api/design") == ("v1", False)  # unchanged: nothing downloaded

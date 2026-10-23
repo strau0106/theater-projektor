@@ -13,7 +13,7 @@ export function buildTemplate(): string {
       return `<tspan x="${WIDTH / 2}" y="${y0 + i * SLIDE.lineHeight}">${t}</tspan>`;
     });
     return `<g id="para-${p + 1}">
-<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="${SLIDE.size}" fill="#FFFFFF">
+<text text-anchor="middle" font-family="Liberation Sans" font-weight="bold" font-size="${SLIDE.size}" fill="#FFFFFF">
 ${spans.join("\n")}
 </text>
 </g>`;

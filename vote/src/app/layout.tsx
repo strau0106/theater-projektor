@@ -4,7 +4,7 @@ import { COLORS } from "@/design/tokens";
 import "./globals.css";
 
 const display = localFont({ src: "../../fonts/Anton-Regular.ttf", variable: "--font-display", display: "swap" });
-const slide = localFont({ src: "../../fonts/Arimo-Bold.ttf", variable: "--font-slide", weight: "700", display: "swap" });
+const slide = localFont({ src: "../../fonts/LiberationSans-Bold.ttf", variable: "--font-slide", weight: "700", display: "swap" });
 const text = localFont({
   src: [
     { path: "../../fonts/Barlow-Regular.ttf", weight: "400" },

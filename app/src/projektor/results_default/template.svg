@@ -4,21 +4,24 @@
 </g>
 <g id="layer-labels">
 <g id="para-1">
-<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
-<tspan x="960" y="525.94">Heute Abend haben sich {count_nein} Menschen mit ihrer Stimme für eine</tspan>
-<tspan x="960" y="593.44">freie und offene Gesellschaft eingesetzt.</tspan>
+<text text-anchor="middle" font-family="Liberation Sans" font-weight="bold" font-size="92" fill="#FFFFFF">
+<tspan x="960" y="459.648">Heute Abend haben sich {count_nein} Menschen</tspan>
+<tspan x="960" y="571.648">mit ihrer Stimme für eine freie und</tspan>
+<tspan x="960" y="683.648">offene Gesellschaft eingesetzt.</tspan>
 </text>
 </g>
 <g id="para-2">
-<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
-<tspan x="960" y="525.94">Für {count_ja} reichte ein Chupa Chups aus, diese Gesellschaft</tspan>
-<tspan x="960" y="593.44">aufzugeben.</tspan>
+<text text-anchor="middle" font-family="Liberation Sans" font-weight="bold" font-size="92" fill="#FFFFFF">
+<tspan x="960" y="515.648">Für {count_ja} reichte ein Chupa Chups aus,</tspan>
+<tspan x="960" y="627.648">diese Gesellschaft aufzugeben.</tspan>
 </text>
 </g>
 <g id="para-3">
-<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
-<tspan x="960" y="525.94">Wie viele von euch es nicht wichtig genug fanden, abzustimmen</tspan>
-<tspan x="960" y="593.44">und damit die Katastrophe zu verhindern, wissen wir nicht.</tspan>
+<text text-anchor="middle" font-family="Liberation Sans" font-weight="bold" font-size="92" fill="#FFFFFF">
+<tspan x="960" y="403.648">Wie viele von euch es nicht wichtig</tspan>
+<tspan x="960" y="515.648">genug fanden, abzustimmen und damit</tspan>
+<tspan x="960" y="627.648">die Katastrophe zu verhindern,</tspan>
+<tspan x="960" y="739.648">wissen wir nicht.</tspan>
 </text>
 </g>
 </g>

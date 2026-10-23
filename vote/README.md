@@ -50,7 +50,7 @@ ProxyPassReverse /welle http://127.0.0.1:3100/welle
 - The bridge (`projektor-bridge --results-url https://vote.rufusreglet.ch/api/results`) fetches `GET /api/results`
   when QLab sends `/bridge/results` and forwards `ja`, `nein`, `poll_id` to the Pi as `/proj/results/show`.
 - The Pi fetches the design before the show (`/proj/design/fetch`, `[results] design_url =
-  "https://vote.rufusreglet.ch/api/design"`): the manifest lists `template.svg` and the Arimo Bold font (URLs relative
+  "https://vote.rufusreglet.ch/api/design"`): the manifest lists `template.svg` and the Liberation Sans Bold font (URLs relative
   to the manifest URL); `version` is a content hash, so unchanged designs are not downloaded again.
 - Refresh the Pi's bundled default design after changing the look:
   `npm run export-design -- ../app/src/projektor/results_default` (writes `manifest.json`, `template.svg`,
@@ -67,6 +67,6 @@ overlay 0.4-0.8 s (also mid-reveal, from the current state). New counts while sh
 The slide text, its size/position and the mapping of the slide's placeholders to the counts (`SLIDE_COUNT`: x = Nein,
 y = Ja) are in `src/design/tokens.ts`.
 
-- Fonts (OFL, in `fonts/`): Anton (display, vote page), Arimo Bold (projector slide, in the design bundle; Helvetica stand-in, OFL), Barlow (web text).
+- Fonts (OFL, in `fonts/`): Anton (display, vote page), Liberation Sans Bold (projector slide, in the design bundle; Helvetica/Arial metrics, OFL), Barlow (web text).
 - Artwork: `design-src/make-bg.sh` scales `design-src/bg-original.png` (the centre line and frame are part of the
   artwork) to `public/bg.jpg` (1920x1080, embedded in the template).

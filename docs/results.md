@@ -55,7 +55,7 @@ Admin endpoints (`/api/admin/...`) require the admin session cookie.
 ```json
 {"version": "a1b2c3d4e5f6", "width": 1920, "height": 1080,
  "paragraph_mode": "sequence", "template": "design/template.svg",
- "fonts": [{"family": "Arimo", "file": "Arimo-Bold.ttf", "url": "design/fonts/Arimo-Bold.ttf"}]}
+ "fonts": [{"family": "Liberation Sans", "file": "LiberationSans-Bold.ttf", "url": "design/fonts/LiberationSans-Bold.ttf"}]}
 ```
 
 `paragraph_mode` (optional, `"sequence"` default | `"stack"`, see animation) is a per-design override.
@@ -85,8 +85,8 @@ Admin endpoints (`/api/admin/...`) require the admin session cookie.
 - Text has no auto-wrap in librsvg: line breaks are explicit `<tspan x=".." y="..">`.
 - Percent with total = 0: both 0.
 
-The current design ("Keynote text slide"): black background, white Arimo Bold (metric-compatible with
-Helvetica/Arial, stands in for Keynote's Helvetica Neue Bold) 55 px, centred (horizontally and, per paragraph, vertically), three
+The current design ("Keynote text slide"): black background, white Liberation Sans Bold (metric-compatible with
+Helvetica/Arial, OFL) 92 px / 112 px line pitch, centred (horizontally and, per paragraph, vertically), three
 paragraphs `para-1..3` that are shown one at a time. In the slide text `x` = Nein votes (`{count_nein}`), `y` = Ja votes (`{count_ja}`); this
 mapping is the `SLIDE_COUNT` constant in `vote/src/design/tokens.ts`.
 

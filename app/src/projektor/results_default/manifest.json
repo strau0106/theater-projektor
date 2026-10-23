@@ -1,14 +1,14 @@
 {
-  "version": "35438b49d399",
+  "version": "3d827650283a",
   "width": 1920,
   "height": 1080,
   "paragraph_mode": "sequence",
   "template": "template.svg",
   "fonts": [
     {
-      "family": "Arimo",
-      "file": "Arimo-Bold.ttf",
-      "url": "fonts/Arimo-Bold.ttf"
+      "family": "Liberation Sans",
+      "file": "LiberationSans-Bold.ttf",
+      "url": "fonts/LiberationSans-Bold.ttf"
     }
   ]
 }

@@ -13,10 +13,10 @@ h1, h2 { margin: 0; }
 a { color: var(--blue-deep); }
 :focus-visible { outline: 4px solid var(--navy); outline-offset: 3px; }
 
-/* projector graphic: same family as in template.svg (Arimo Bold), the web font is loaded via next/font */
+/* projector graphic: same family as in template.svg (Liberation Sans Bold), the web font is loaded via next/font */
 .tpl { width: 100%; height: 100%; }
 .tpl svg { display: block; width: 100%; height: 100%; }
-.tpl text { font-family: var(--font-slide), Arimo, Arial, Helvetica, sans-serif; }
+.tpl text { font-family: var(--font-slide), "Liberation Sans", Arial, Helvetica, sans-serif; }
 
 /* vote + login */
 .vote-bg {

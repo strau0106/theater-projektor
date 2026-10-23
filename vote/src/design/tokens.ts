@@ -11,7 +11,7 @@ export const COLORS = {
 } as const;
 
 // projector slide font (Helvetica Neue Bold stand-in, metric-compatible with Arial/Helvetica)
-export const FONTS = [{ family: "Arimo", file: "Arimo-Bold.ttf" }] as const;
+export const FONTS = [{ family: "Liberation Sans", file: "LiberationSans-Bold.ttf" }] as const;
 
 export const WIDTH = 1920;
 export const HEIGHT = 1080;
@@ -35,16 +35,17 @@ export const TIMING = {
 // "x" in the Keynote slide = Nein votes, "y" = Ja votes. Swap the tokens here to flip it.
 export const SLIDE_COUNT = { x: "count_nein", y: "count_ja" } as const;
 
-// Keynote text slide (reference: 16:9, black, white bold; size/line pitch measured on the thumbnail).
+// Keynote-style text slide (black, white Liberation Sans Bold). Each paragraph is its own slide, so the
+// text is set large: the widest line with a 3-digit count is ~1725 px of 1920 at size 92.
 // Lines are centred horizontally; each paragraph is centred vertically on its own (template.ts).
 export const SLIDE = {
-  size: 55,
-  lineHeight: 67.5,
-  capHeight: 0.716, // Arimo/Helvetica cap height / size, for the vertical centring
+  size: 92,
+  lineHeight: 112,
+  capHeight: 0.688, // Liberation Sans cap height / size, for the vertical centring
   // paragraphs (-> <g id="para-N">), one entry per line; {x} / {y} are replaced by SLIDE_COUNT tokens
   paragraphs: [
-    ["Heute Abend haben sich {x} Menschen mit ihrer Stimme für eine", "freie und offene Gesellschaft eingesetzt."],
-    ["Für {y} reichte ein Chupa Chups aus, diese Gesellschaft", "aufzugeben."],
-    ["Wie viele von euch es nicht wichtig genug fanden, abzustimmen", "und damit die Katastrophe zu verhindern, wissen wir nicht."],
+    ["Heute Abend haben sich {x} Menschen", "mit ihrer Stimme für eine freie und", "offene Gesellschaft eingesetzt."],
+    ["Für {y} reichte ein Chupa Chups aus,", "diese Gesellschaft aufzugeben."],
+    ["Wie viele von euch es nicht wichtig", "genug fanden, abzustimmen und damit", "die Katastrophe zu verhindern,", "wissen wir nicht."],
   ],
 } as const;
