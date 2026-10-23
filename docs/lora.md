@@ -111,6 +111,9 @@ use the LoRa path for fast repeated stuff (e.g. a "go" every second for a minute
 programming = 8.6 s airtime, ¼ of the hourly budget).
 The bridge accounts airtime over a sliding hour; when the budget would be exceeded it logs
 a warning and sends single copies only (it never drops the first copy – the show goes on).
+`/bridge/results` is handled by the bridge itself (HTTP GET of `--results-url`, timeout 3 s, not
+forwarded); the resulting `/proj/results/set ja nein poll_id` frame is 49 bytes max (~15 ms airtime at
+SF7/500 kHz) and goes through the normal repeat / duty-cycle path. Its reply `/proj/results/ok` is small enough for LoRa.
 The Pi is a separate transmitter with its own budget; it only sends replies (`/proj/pong`,
 `/proj/error`, ...). `/proj/state` replies are usually > 240 B and are not sent over LoRa.
 

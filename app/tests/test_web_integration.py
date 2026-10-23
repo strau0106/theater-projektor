@@ -119,3 +119,22 @@ def test_wifi_and_system(real):
     assert c.get("/api/wifi").status_code == 200
     s = c.get("/api/system").json()
     assert s["device"] == "proj-int" and s["net"]["state"] == "unknown"
+
+
+def test_results_cue_editing_and_results_api(real):
+    c, ctrl, player, store = real
+    r = c.post("/api/cues", json={"name": "Ergebnis", "type": "results"})
+    assert r.status_code == 200, r.text
+    cue = r.json()["cue"]
+    assert cue["type"] == "results" and cue["video"] == ""
+    assert c.put(f"/api/cues/{cue['id']}", json={"name": "Graph"}).json()["cue"]["name"] == "Graph"
+    assert c.post("/api/cues", json={"name": "x", "type": "bogus"}).status_code == 422
+    assert c.post("/api/cues", json={"name": "x", "video": "nope"}).status_code == 422
+    # stored results + design status
+    assert c.get("/api/results").json()["results"] is None
+    assert c.post("/api/results", json={"ja": 4, "nein": 5, "poll_id": 2}).json()["results"]["nein"] == 5
+    d = c.get("/api/results").json()["design"]
+    assert d["source"] == "default" and d["version"]
+    assert c.post("/api/design/fetch", json={}).status_code == 400  # no design_url configured
+    ctrl.cue(cue["id"])
+    assert player.results == (4, 5)

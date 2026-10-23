@@ -297,3 +297,70 @@ def test_letterbox_follows_input_aspect(gplayer, image_paths):
         assert run_until(lambda: gplayer.state == "holding", 10)
         lo, hi = _content_x(gplayer)
         assert abs(lo - want[0]) <= 2 and abs(hi - want[1]) <= 2, (path.name, lo, hi)
+
+
+def _results_player(gplayer, tmp_path):
+    from projektor.results import DesignStore
+
+    gplayer.settings.results.in_s = 0.26
+    gplayer.settings.results.out_s = 0.16
+    gplayer.settings.results.para_gap_s = 0.5
+    gplayer.results_design = DesignStore(tmp_path / "rdata")
+    return gplayer
+
+
+def test_results_overlay_needs_gl_display(gplayer, tmp_path):
+    if gplayer.kind != "fakesink":
+        pytest.skip("GL display supports the overlay")
+    from projektor import ProjektorError
+
+    assert not gplayer.supports_results
+    with pytest.raises(ProjektorError, match="needs GL display"):
+        gplayer.results_show(1, 2)
+
+
+def test_results_overlay_show_hold_hide(gplayer, tmp_path):
+    if gplayer.kind == "fakesink":
+        pytest.skip("results overlay is GL only")
+    p = _results_player(gplayer, tmp_path)
+    assert p.supports_results and brightest(p) < 40  # black before
+    p.results_show(41, 17)
+    assert p.results_visible
+    assert run_until(lambda: p.presenter._phase == "shown" and p.presenter._renderer is not None, 10)
+    run_until(lambda: False, 0.3)
+    shown = frame(p)
+    assert sum(1 for b in shown if b > 40) > len(shown) * 0.02  # white text on the black slide
+    # no frames are pushed any more: the mixer keeps showing the last one
+    n = p.presenter.frames_pushed
+    run_until(lambda: False, 1.0)
+    assert p.presenter.frames_pushed == n and frame(p) == shown
+    p.results_hide()
+    assert run_until(lambda: p.presenter._phase == "hidden", 5)
+    run_until(lambda: False, 0.3)
+    assert brightest(p) < 40  # released: black again
+    # stop cuts at once
+    p.results_show(1, 1)
+    assert run_until(lambda: p.presenter._phase == "in" or p.presenter._phase == "shown", 5)
+    p.results_clear()
+    assert run_until(lambda: p.presenter._phase == "hidden", 5)
+    run_until(lambda: False, 0.3)
+    assert brightest(p) < 40
+    assert p.events["errors"] == []
+
+
+def test_results_overlay_over_video_fades_with_alpha(gplayer, tmp_path, clip_path):
+    if gplayer.kind == "fakesink":
+        pytest.skip("results overlay is GL only")
+    p = _results_player(gplayer, tmp_path)
+    p.play(Clip("t", clip_path, fade_in=0.0, end="hold"))
+    assert run_until(lambda: p.state == "holding", 10)
+    p.results_show(3, 1)
+    assert run_until(lambda: p.presenter._phase == "shown", 10)
+    pad = p._display._ov_pad
+    run_until(lambda: False, 0.2)
+    assert pad.get_property("alpha") == 1.0 and pad.get_property("blend-constant-color-alpha") == 1.0
+    p.results_hide()
+    assert run_until(lambda: p.presenter._phase == "hidden", 5)
+    run_until(lambda: False, 0.2)
+    assert pad.get_property("alpha") == 0.0
+    assert p.state == "holding"  # the video underneath is untouched

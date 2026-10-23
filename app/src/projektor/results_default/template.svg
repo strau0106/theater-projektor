@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<g id="layer-static">
+<rect width="1920" height="1080" fill="#000000"/>
+</g>
+<g id="layer-labels">
+<g id="para-1">
+<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
+<tspan x="960" y="323.44">Heute Abend haben sich {count_nein} Menschen mit ihrer Stimme für eine</tspan>
+<tspan x="960" y="390.94">freie und offene Gesellschaft eingesetzt.</tspan>
+</text>
+</g>
+<g id="para-2">
+<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
+<tspan x="960" y="525.94">Für {count_ja} reichte ein Chupa Chups aus, diese Gesellschaft</tspan>
+<tspan x="960" y="593.44">aufzugeben.</tspan>
+</text>
+</g>
+<g id="para-3">
+<text text-anchor="middle" font-family="Arimo" font-weight="bold" font-size="55" fill="#FFFFFF">
+<tspan x="960" y="728.44">Wie viele von euch es nicht wichtig genug fanden, abzustimmen</tspan>
+<tspan x="960" y="795.94">und damit die Katastrophe zu verhindern, wissen wir nicht.</tspan>
+</text>
+</g>
+</g>
+</svg>

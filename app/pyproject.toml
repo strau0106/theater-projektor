@@ -32,7 +32,7 @@ projektor-prepare = "projektor.prepare:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-projektor = ["web/static/**/*"]
+projektor = ["web/static/**/*", "results_default/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

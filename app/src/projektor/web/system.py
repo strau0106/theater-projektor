@@ -137,6 +137,10 @@ class WifiCli:
     def remove(self, ssid: str):
         return self.run("remove", ssid)
 
+    def export(self):
+        """All networks incl. passwords (for the backup); needs a projektor-wifi that knows `export`."""
+        return self.run("export")
+
     def retry(self):
         return self.run("retry")
 

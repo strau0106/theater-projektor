@@ -35,6 +35,8 @@ app/                       Python package "projektor" (Pi app + PC dev mode + Lo
     config.py              Settings (TOML) + Show (JSON) models, load/save/validate     [core]
     controller.py          Controller: cue engine / state machine                       [core]
     commands.py            OSC address -> Controller dispatcher, cross-transport dedup  [core]
+    results.py             audience-vote graph: stored results, design cache/fetch, librsvg+cairo renderer, animation [core]
+    results_default/       bundled default design (manifest.json, template.svg, fonts/)
     status.py              status-screen text from Controller + net/tunnel status      [core]
     player/base.py         Player interface                                             [core]
     player/gst.py          GStreamer player                                             [core]
@@ -141,6 +143,18 @@ Process model inside `projektor run`:
   decode (one frame; `v4l2jpegdec` is kept out of autoplugging because the Pi 4 hardware JPEG
   decoder never outputs a lone still): Pi 4 measured ~150 ms GO → picture for a 1080p JPEG/PNG,
   ~500 ms for a 12 MP photo; `projektor-prepare` shrinks images to the display size beforehand.
+- Results graph (`results.py`, docs/results.md): a second `appsrc` on the mixer (`sink_2`,
+  zorder above the video pad, display size, pre-multiplied BGRA at display fps). librsvg renders the
+  design's layers once (static, one per text paragraph `para-N`, optional bar-ja/bar-nein) into cairo surfaces
+  cropped to their ink rectangle; a worker thread composes only the animated region per frame (static,
+  paragraphs revealed one after the other with alpha, bars only for old bar templates) and pushes frames only while animating (the
+  mixer keeps the last frame, like a held clip). The overlay is faded as a whole by the pad `alpha`
+  with a GstController; because the source is pre-multiplied the pad blends with
+  `blend-function-src-rgb=constant-alpha` and `blend-constant-color-alpha` is driven by the same
+  control source. Hidden = alpha 0 + appsrc flush (the mixer drops the frame). Bundle fonts are
+  registered in-process (`FcConfigAppFontAddFile`). **GL display only**: on the kms/CPU path
+  `supports_results` is False and a results cue reports the error `results overlay needs GL display`.
+  Measured on a PC at 1080p: compose 1.7 ms + copy ~6 ms per frame, 67 ms to render the fixed layers.
 - Letterboxing (GL): the video pad's rectangle (xpos/ypos/width/height, sizing-policy none) is
   computed by the player for every new input size/PAR. glvideomixer's own keep-aspect-ratio box
   is computed once and was kept across caps changes (portrait image after a 16:9 clip stretched). In/out points, pause points, `start_at`, `end`, `seek` and
@@ -166,6 +180,8 @@ Default UDP port **9000**. All addresses under `/proj`. Arguments in brackets ar
 | `/proj/reload` | — | Reload show.json. |
 | `/proj/ping` | — | Reply `/proj/pong <device_name>`. |
 | `/proj/state` | — | Reply `/proj/state <json-string>`. |
+| `/proj/results/set` | `ja nein [poll_id]` | Store the vote results (persisted, `<data dir>/results.json`); no display change. Reply `/proj/results/ok ja nein poll_id`. |
+| `/proj/design/fetch` | `[url]` | Download the results-graph design (manifest + template + fonts) from `url` or `[results] design_url` into `<data dir>/design/` (worker thread; skipped when the version is unchanged). Reply `/proj/design/ok <version>` or `/proj/error <msg>`. |
 | `/proj/beamer/power` | `on\|off\|1\|0` | Beamer on (HDMI-CEC image-view-on + active-source) or standby. Runs in a worker thread. |
 | `/proj/beamer/status` | — | Reply `/proj/beamer/status on\|standby\|unknown\|unavailable`. |
 | `/proj/beamer/key` | `name` | CEC key press: `up down left right select back home menu volume-up volume-down mute`. |
@@ -175,6 +191,9 @@ Rules:
   screen (until `/proj/status 1`).
 - Replies are sent (UDP) to the sender's address and port, or to `osc.reply_host:osc.reply_port` if set.
   Over LoRa, replies go back over LoRa (best effort).
+- A **results cue** (`"type": "results"`, §6) is run by `go`/`cue` like an image cue: the graph animates in
+  with the stored results and holds (state `holding`) until the next cue (graph animates out while the next
+  cue starts), `fadeout` (animates out) or `stop` (cut). No stored results: 0 / 0 and a warning.
 - Errors (unknown address, bad args, unknown cue) are logged, reported as `/proj/error <msg>` reply,
   and never crash the app.
 - **Cross-transport dedup:** the same `(address, args)` arriving via a *different* transport within
@@ -234,7 +253,13 @@ key = "/var/lib/projektor/.ssh/id_backup"
 remote_dir = ""          # relative to rrsync root on server
 auto = true              # instant backup after uploads / show edits / file deletes
 auto_delay_s = 10        # debounce; bursts coalesce; failures retry 30 s .. 15 min and when net.json -> connected
-                         # (pending flag: data_dir/.backup_pending; never deletes remote files)
+                         # (pending flag: data_dir/.backup_pending; media/ is never deleted remotely, state/ is a mirror)
+
+[results]                # audience-vote graph (docs/results.md)
+design_url = ""          # e.g. "https://example.org/welle/api/design"
+in_s = 1.3               # overlay fade + fade-in of one paragraph (scales the 1.3 s of the contract)
+out_s = 0.8              # total out-animation
+para_gap_s = 2.5         # start of one paragraph to the start of the next (absolute)
 
 [notify]                 # Discord webhook notifications (docs/infmk1.md "Notifications")
 discord_webhook = ""     # empty = disabled
@@ -269,6 +294,10 @@ min_interval_s = 30      # rate limit per event type
 }
 ```
 Cue fields set to `null` inherit from the video. `end` ∈ `black | hold | loop`. Times in seconds (float).
+
+A cue with `"type": "results"` (default `"video"`) has no video: `{"id": "12", "name": "Ergebnis",
+"type": "results", "fade_in": null, "fade_out": null}`; it shows the audience-vote graph (§5). Standby/preload
+treats it as a cue without a clip.
 
 Images are entries in `videos` too (same schema, no separate list): a `file` with an image extension
 (`.jpg .jpeg .png .webp`) is a still image. For images only `title`, `fade_in`, `fade_out` and
@@ -381,9 +410,28 @@ Access: `ssh -J <you>@infmk1 -p 2222 theater@localhost`.
 infmk1 server (`server/setup-infmk1.sh`, run once as root):
 - `projtunnel`: no shell, authorized_keys `restrict,port-forwarding,permitlisten="127.0.0.1:2222",permitlisten="127.0.0.1:8080",command="/bin/false"`.
 - `projbackup`: authorized_keys `restrict,command="rrsync /srv/theater-projektor"`; backups at
-  `/srv/theater-projektor/{media,show.json,snapshots/}`.
-- Backup: `rsync -a --partial media/ show.json` → server; also `snapshots/show-<timestamp>.json`.
-  Restore/download: reverse direction, selectable in web UI.
+  `/srv/theater-projektor/{media,state,config,show.json,snapshots/}`.
+- Backup (everything needed to rebuild a projector), all via rsync through `rrsync`:
+  - `media/` ← `data_dir/media` (never deletes remotely);
+  - `show.json` + `snapshots/show-<UTC>.json` (naming unchanged);
+  - `state/` ← mirror of `data_dir` minus `media/`, `.ssh/` (SSH keys are never backed up), `show.json`,
+    per-device secrets/status/transient files (`STATE_EXCLUDES` in `backup.py`). Generic rule: results.json,
+    the design cache `design/` and any future state file are covered without code changes;
+  - `config/projektor.toml` (settings) and `config/wifi.json` (WiFi networks incl. passwords, mode 0600,
+    read via `sudo projektor-wifi export` - NetworkManager is the canonical store; covered by the existing
+    sudoers entry `projektor-wifi *`), plus `snapshots/config-<UTC>.toml` / `wifi-<UTC>.json`, written only
+    when the content changed. A failing WiFi export (old CLI) is reported but does not fail the backup;
+    an empty network list never overwrites the stored one.
+  - Auto-backup (§ above) includes state, settings and WiFi; it is also triggered by new results, a
+    design fetch and WiFi add/remove.
+- Restore (web UI "Restore", or `POST /api/backup/restore {snapshot, media, state, config}`):
+  default = show (latest or snapshot) + reload; `media` pulls `media/`; `state` pulls `state/` into
+  `data_dir` (no deletions; results + design reloaded live); `config` (explicit, always the latest backup)
+  validates `projektor.toml` with the settings loader, keeps the old file as `projektor.toml.before-restore`,
+  replaces it and tells the user to restart; WiFi networks are re-added through `projektor-wifi add-json`
+  (existing networks are kept).
+- `tools/pi/flash-sd.sh` can preload `state/`, (with `--with-config`) the settings file and the WiFi list
+  (appended to the bootfs `projektor-wifi.txt`) from a copy of the backup root onto a freshly flashed card.
 
 Keys: `image/build.sh` generates `secrets/id_backup`, `secrets/id_tunnel` (ed25519) if absent, bakes
 them into the image, prints the public keys + exact `setup-infmk1.sh` invocation.

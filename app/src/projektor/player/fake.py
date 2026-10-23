@@ -52,6 +52,8 @@ class FakePlayer(Player):
         self.promoted = False  # tests: last play() used the prepared clip
         self._pp: list[float] = []
         self._timer = None
+        self.results_supported = True
+        self.results: tuple[int, int] | None = None  # shown graph (ja, nein)
 
     # ------------------------------------------------------------------ queries
     def position(self) -> float | None:
@@ -209,6 +211,30 @@ class FakePlayer(Player):
     def set_status(self, visible: bool, text: str = "") -> None:
         self.status_visible = bool(visible)
         self.status_text = text
+
+    # ------------------------------------------------------------------ results overlay
+    @property
+    def supports_results(self) -> bool:
+        return self.results_supported
+
+    @property
+    def results_visible(self) -> bool:
+        return self.results is not None
+
+    def results_show(self, ja: int, nein: int) -> None:
+        self.calls.append(("results_show", ja, nein))
+        self.results = (ja, nein)
+
+    def results_hide(self, seconds: float | None = None) -> None:
+        self.calls.append(("results_hide", seconds))
+        self.results = None
+
+    def results_clear(self) -> None:
+        self.calls.append(("results_clear",))
+        self.results = None
+
+    def reload_results_design(self) -> None:
+        self.calls.append(("reload_results_design",))
 
     # ------------------------------------------------------------------ test helpers
     def fail(self, msg: str = "decode error") -> None:

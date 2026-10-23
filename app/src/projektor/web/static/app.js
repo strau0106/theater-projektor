@@ -21,6 +21,8 @@ const OSC_REF = [
   ["/proj/reload", "-", "Reload show.json."],
   ["/proj/ping", "-", "Reply /proj/pong <device_name>."],
   ["/proj/state", "-", "Reply /proj/state <json-string>."],
+  ["/proj/results/set", "ja nein [poll_id]", "Store the vote results (persisted). Shown by a results cue; reply /proj/results/ok ja nein poll_id."],
+  ["/proj/design/fetch", "[url]", "Download the results graph design (default [results] design_url). Reply /proj/design/ok <version>."],
   ["/proj/beamer/power", "on|off|1|0", "Beamer on (HDMI-CEC image view on + active source) or sleep."],
   ["/proj/beamer/source", "", "Switch the beamer to the Pi's HDMI input (active source)."],
   ["/proj/beamer/status", "-", "Reply /proj/beamer/status on|standby|unknown|unavailable."],
@@ -146,7 +148,8 @@ function cueLabel(id) {
   return `#${i + 1}  ${c.name || "(unnamed)"}` + (String(c.id) !== String(i + 1) ? `  [id ${c.id}]` : "");
 }
 
-function videoTitle(id) {
+function videoTitle(id, cue) {
+  if (cue && cue.type === "results") return "results graph";
   const v = S.show && S.show.videos[id];
   return v ? (v.title || id) : id;
 }
@@ -285,7 +288,7 @@ function renderLiveCues() {
       h("span", { class: "num" }, i + 1),
       h("span", { class: "nm" }, c.name || "(unnamed)", cur ? h("span", { class: "tag cur" }, "NOW") : null,
         sb ? h("span", { class: "tag sb" }, "STANDBY") : null,
-        h("small", {}, `id ${c.id} - ${videoTitle(c.video)}`)),
+        h("small", {}, `id ${c.id} - ${videoTitle(c.video, c)}`)),
       h("span", { class: "acts" },
         h("button", { class: "small primary", onclick: (e) => { e.stopPropagation(); transport("cue", { ref: c.id }); S.selCue = null; } }, "Run"),
         h("button", { class: "small", onclick: (e) => { e.stopPropagation(); transport("standby", { ref: c.id }); S.selCue = null; } }, "Standby")));
@@ -573,6 +576,7 @@ function renderCues() {
   const cues = S.show.cues;
   if (!cues.length) box.append(h("p", { class: "muted" }, "No cues yet."));
   cues.forEach((c, i) => {
+    const res = c.type === "results";
     const v = S.show.videos[c.video];
     const img = videoIsImage(c.video);
     const ov = [];
@@ -585,14 +589,29 @@ function renderCues() {
           h("button", { class: "small", disabled: i === cues.length - 1, title: "move down", onclick: () => moveCue(i, 1) }, "▼")),
         h("div", { class: "grow" },
           h("div", { class: "title" }, `#${i + 1}  `, h("span", { class: "muted" }, `id ${c.id}`), "  ", c.name || "(unnamed)"),
-          h("div", { class: "sub" }, v ? `${img ? "image: " : ""}${v.title || c.video} [${c.video}]` : `missing video ${c.video}`, ov.length ? " - " + ov.join(" - ") : "")),
+          h("div", { class: "sub" }, res ? "results graph (audience vote)" : v ? `${img ? "image: " : ""}${v.title || c.video} [${c.video}]` : `missing video ${c.video}`, ov.length ? " - " + ov.join(" - ") : "")),
         h("button", { class: "small", onclick: () => { S.editCue = S.editCue === c.id ? null : c.id; renderCues(); } }, S.editCue === c.id ? "Close" : "Edit")));
     if (S.editCue === c.id) item.append(cueEditor(c));
     box.append(item);
   });
 }
 
+function resultsCueEditor(c) {
+  const ed = h("div", { class: "editor" },
+    h("div", { class: "grid2" },
+      h("label", { class: "f" }, "Cue id", h("input", { "data-k": "id", value: c.id })),
+      h("label", { class: "f" }, "Name", h("input", { "data-k": "name", value: c.name || "" }))),
+    h("p", { class: "muted small" }, "Results cue: the graph animates in with the stored results (/proj/results/set), stays until the next cue (animates out), Fade out or Stop."),
+    h("div", { class: "row" },
+      h("button", { class: "primary", onclick: () => saveCue(c, ed) }, "Save"),
+      h("button", { onclick: () => { S.editCue = null; renderCues(); } }, "Cancel"),
+      h("span", { class: "grow" }),
+      h("button", { class: "danger", onclick: () => deleteCue(c) }, "Delete cue")));
+  return ed;
+}
+
 function cueEditor(c) {
+  if (c.type === "results") return resultsCueEditor(c);
   const v = S.show.videos[c.video] || {};
   const img = isImage(v.file);
   const val = (x) => (x === null || x === undefined ? "" : x);
@@ -654,6 +673,12 @@ async function moveCue(i, dir) {
   if (r) { await loadShow(); renderCues(); }
 }
 
+$("cueAddResults").addEventListener("click", async () => {
+  if (!S.show) return;
+  const r = await act(() => api("POST", "/api/cues", { name: "Results", type: "results" }));
+  if (r) { S.editCue = r.cue.id; await loadShow(); renderCues(); }
+});
+
 $("cueAdd").addEventListener("click", async () => {
   if (!S.show || !Object.keys(S.show.videos).length) return toast("upload a video first", true);
   const lastVid = S.show.cues.length ? S.show.cues[S.show.cues.length - 1].video : Object.keys(S.show.videos)[0];
@@ -698,7 +723,30 @@ async function loadSystem() {
   const pe = s.power_enabled || {};
   $("pwInfo").textContent = pe.reboot || pe.shutdown ? "" : "Power buttons are disabled in dev mode (not running on the Pi image).";
   renderTransports();
+  loadResults();
 }
+
+// ------------------------------------------------------------------ results graph + design
+let designPoll = null;
+
+async function loadResults() {
+  let r;
+  try { r = await api("GET", "/api/results"); } catch (e) { return; }
+  const res = r.results, d = r.design || {};
+  kv($("resKv"), [
+    ["Stored results", res ? `Ja ${res.ja} : Nein ${res.nein}  (poll ${res.poll_id}, ${fmtAge(res.time)})` : "none yet (graph shows 0 / 0)"],
+    ["Design", `${d.version || "-"}  (${d.source || "-"})`],
+    ["Last fetch", d.fetching ? "running..." : d.error ? d.error : d.fetched ? fmtAge(d.fetched) : "-", d.error ? "err" : ""],
+  ]);
+  if (d.fetching && !designPoll) designPoll = setInterval(loadResults, 1000);
+  if (!d.fetching && designPoll) { clearInterval(designPoll); designPoll = null; }
+}
+
+$("designFetch").addEventListener("click", async () => {
+  const url = $("designUrl").value.trim();
+  await act(() => api("POST", "/api/design/fetch", url ? { url } : {}), "design fetch started");
+  loadResults();
+});
 
 function renderTransports() {
   const tr = (S.state && S.state.transports) || {};
@@ -827,10 +875,14 @@ $("bkList").addEventListener("click", async () => {
   toast(`${r.snapshots.length} snapshot(s)`);
 });
 $("bkRestore").addEventListener("click", async () => {
-  const snap = $("bkSnap").value, media = $("bkMedia").checked;
-  if (!confirm(`Restore ${snap === "latest" ? "the latest backup" : snap}${media ? " including video files" : ""}?\n\n` +
-    "The current show.json will be replaced (a copy is kept as show.before-restore.json).")) return;
-  const r = await act(() => api("POST", "/api/backup/restore", { snapshot: snap, media }), "restore started");
+  const snap = $("bkSnap").value, media = $("bkMedia").checked, state = $("bkState").checked, config = $("bkConfig").checked;
+  const extra = [media && "video files", state && "results + design", config && "settings + WiFi networks"].filter(Boolean);
+  if (!confirm(`Restore ${snap === "latest" ? "the latest backup" : snap}${extra.length ? " including " + extra.join(", ") : ""}?\n\n` +
+    "The current show.json will be replaced (a copy is kept as show.before-restore.json)." +
+    (state ? "\nResults and the cached design are overwritten by the backed-up ones." : "") +
+    (config ? "\nThe settings file is replaced after a validity check (the previous one is kept as projektor.toml.before-restore) and " +
+      "backed-up WiFi networks are added; the projector must be restarted to apply the settings." : ""))) return;
+  const r = await act(() => api("POST", "/api/backup/restore", { snapshot: snap, media, state, config }), "restore started");
   if (r) renderBackup(r);
 });
 

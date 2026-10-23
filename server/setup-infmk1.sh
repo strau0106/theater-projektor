@@ -12,7 +12,7 @@
 #   projtunnel  no shell; key may only open the reverse forwards
 #               127.0.0.1:<ssh-port> and 127.0.0.1:<web-port> (permitlisten)
 #   projbackup  key forced into rrsync, confined to <backup-root>
-#   <backup-root>/{media,snapshots}  (owned by projbackup)
+#   <backup-root>/{media,state,config,snapshots}  (owned by projbackup)
 #   /etc/ssh/sshd_config.d/theater-projektor.conf  (Match User blocks)
 set -euo pipefail
 
@@ -138,8 +138,8 @@ fi
 
 echo "== backup root"
 install -d -m 750 -o projbackup -g projbackup "${BACKUP_ROOT}"
-install -d -m 750 -o projbackup -g projbackup "${BACKUP_ROOT}/media" "${BACKUP_ROOT}/snapshots"
-ok "${BACKUP_ROOT}/{media,snapshots}"
+install -d -m 750 -o projbackup -g projbackup "${BACKUP_ROOT}/media" "${BACKUP_ROOT}/state" "${BACKUP_ROOT}/config" "${BACKUP_ROOT}/snapshots"
+ok "${BACKUP_ROOT}/{media,state,config,snapshots}"
 
 echo "== sshd"
 cat > "${SSHD_SNIPPET}.tmp" <<EOF

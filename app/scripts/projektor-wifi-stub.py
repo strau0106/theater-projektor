@@ -4,7 +4,7 @@
 Same CLI and JSON output shape, but backed by a JSON state file instead of
 NetworkManager:
 
-    projektor-wifi-stub.py [--state FILE] list|add <ssid> <psk> [prio]|add-json|remove <ssid>|scan|retry
+    projektor-wifi-stub.py [--state FILE] list|add <ssid> <psk> [prio]|add-json|export|remove <ssid>|scan|retry
 
 `add-json` reads {"ssid", "psk", "priority", "eap": {...}} from stdin.
 
@@ -57,7 +57,7 @@ def out(obj: dict, code: int = 0) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default=os.environ.get("PROJEKTOR_WIFI_STUB_STATE", "devdata/wifi-stub.json"))
-    ap.add_argument("cmd", choices=["list", "add", "add-json", "remove", "scan", "retry"])
+    ap.add_argument("cmd", choices=["list", "add", "add-json", "export", "remove", "scan", "retry"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args(argv)
     path = Path(a.state)
@@ -101,9 +101,14 @@ def main(argv=None) -> int:
                 return out({"ok": False, "error": "WPA password must be 8..63 characters"}, 1)
             security, identity = ("psk" if psk else "open"), ""
         nets[:] = [n for n in nets if n["ssid"] != ssid] + [
-            {"ssid": ssid, "priority": prio, "security": security, "identity": identity}]
+            {"ssid": ssid, "priority": prio, "security": security, "identity": identity,
+             "psk": psk, "eap": eap}]
         save(path, st)
         return out({"ok": True, "ssid": ssid, "priority": prio, "security": security})
+    if a.cmd == "export":
+        return out({"ok": True, "skipped": [], "networks": [
+            dict({"ssid": n["ssid"], "priority": n.get("priority", 0), "psk": n.get("psk", "")},
+                 **({"eap": n["eap"]} if n.get("eap") else {})) for n in nets]})
     if a.cmd == "remove":
         if not a.args:
             return out({"ok": False, "error": "usage: remove <ssid>"}, 1)

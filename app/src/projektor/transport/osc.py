@@ -76,16 +76,19 @@ class OscServer:
 
     def _handle(self, client_address: tuple[str, int], address: str, *args: Any) -> None:
         try:
-            replies = self.dispatcher.handle(address, list(args), "osc")
+            replies = self.dispatcher.handle(
+                address, list(args), "osc",
+                reply=lambda a, r: self._send(client_address, a, r))
         except Exception:  # noqa: BLE001 - never kill the server thread
             log.exception("dispatcher failed for %s", address)
             return
-        if not replies:
-            return
+        for addr, rargs in replies or []:
+            self._send(client_address, addr, rargs)
+
+    def _send(self, client_address: tuple[str, int], addr: str, rargs: list) -> None:
         host = self.settings.osc.reply_host or client_address[0]
         port = self.settings.osc.reply_port or client_address[1]
-        for addr, rargs in replies:
-            try:
-                self._server.socket.sendto(build_message(addr, rargs), (host, port))
-            except OSError as e:
-                log.warning("OSC reply to %s:%s failed: %s", host, port, e)
+        try:
+            self._server.socket.sendto(build_message(addr, rargs), (host, port))
+        except OSError as e:
+            log.warning("OSC reply to %s:%s failed: %s", host, port, e)

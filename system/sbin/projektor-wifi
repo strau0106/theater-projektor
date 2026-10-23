@@ -9,6 +9,8 @@ Runs as root. Uses NetworkManager through `nmcli`. Python stdlib only.
     projektor-wifi add <ssid> <psk> [prio]   add / replace a network     (JSON, psk "" = open)
     projektor-wifi add-json                  add / replace from JSON on stdin, incl. WPA-Enterprise
     projektor-wifi remove <ssid>             forget a network            (JSON)
+    projektor-wifi export                    all networks incl. passwords (JSON, for the app's backup;
+                                             same shape as add-json: ssid, psk, priority, eap{...})
     projektor-wifi scan                      visible networks            (JSON)
     projektor-wifi retry                     daemon: leave hotspot, retry now (JSON)
     projektor-wifi status                    current net.json            (JSON)
@@ -148,8 +150,8 @@ def split_terse(line: str, maxsplit: int = -1) -> list[str]:
     return out
 
 
-def con_props(ident: str, fields: list[str]) -> dict:
-    out = nmcli("-t", "-f", ",".join(fields), "connection", "show", "uuid", ident)
+def con_props(ident: str, fields: list[str], secrets: bool = False) -> dict:
+    out = nmcli("-t", *(["-s"] if secrets else []), "-f", ",".join(fields), "connection", "show", "uuid", ident)
     props = {}
     for line in out.splitlines():
         if ":" in line:
@@ -185,6 +187,40 @@ def known_networks() -> list[dict]:
                      "security": security, "identity": p.get("802-1x.identity", "") if security == "eap" else ""})
     nets.sort(key=lambda n: (-n["priority"], n["ssid"]))
     return nets
+
+
+def export_networks() -> dict:
+    """All known networks with their secrets, in the shape `add-json` takes (backup/restore)."""
+    nets, skipped = [], []
+    for n in known_networks():
+        p = con_props(n["uuid"], ["802-11-wireless-security.psk", "802-1x.eap", "802-1x.phase2-auth",
+                                  "802-1x.anonymous-identity", "802-1x.domain-suffix-match", "802-1x.ca-cert",
+                                  "802-1x.password"], secrets=True)
+        entry = {"ssid": n["ssid"], "priority": n["priority"], "psk": ""}
+        if n["security"] == "eap":
+            ca = ""
+            ca_path = re.sub(r"^file://", "", p.get("802-1x.ca-cert", "")).rstrip("\x00")
+            if ca_path and os.path.isfile(ca_path):
+                try:
+                    with open(ca_path, encoding="utf-8") as f:
+                        ca = f.read()
+                except (OSError, UnicodeDecodeError):
+                    pass
+            if not p.get("802-1x.password"):
+                skipped.append(n["ssid"])
+                continue
+            entry["eap"] = {"identity": n["identity"], "password": p["802-1x.password"],
+                            "method": (p.get("802-1x.eap") or "peap").split(",")[0],
+                            "phase2": p.get("802-1x.phase2-auth", ""),
+                            "anonymous_identity": p.get("802-1x.anonymous-identity", ""),
+                            "domain_suffix": p.get("802-1x.domain-suffix-match", ""), "ca_cert": ca}
+        elif n["security"] == "psk":
+            entry["psk"] = p.get("802-11-wireless-security.psk", "")
+            if not entry["psk"]:
+                skipped.append(n["ssid"])
+                continue
+        nets.append(entry)
+    return {"ok": True, "networks": nets, "skipped": skipped}
 
 
 def wifi_device(cfg: Config) -> dict | None:
@@ -761,6 +797,8 @@ def main(argv: list[str]) -> int:
             if len(args) != 1:
                 return out({"ok": False, "error": "usage: remove <ssid>"}, 1)
             return out(remove_network(args[0]))
+        if cmd == "export":
+            return out(export_networks())
         if cmd == "scan":
             dev = wifi_device(cfg)
             in_ap = bool(dev and dev["connection"] == HOTSPOT_CON)

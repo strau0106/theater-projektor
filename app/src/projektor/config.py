@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from . import ProjektorError
 
@@ -42,6 +42,7 @@ __all__ = [
 DEV_CONFIG = Path(__file__).resolve().parents[2] / "dev" / "projektor.toml"
 
 EndMode = Literal["black", "hold", "loop"]
+CueType = Literal["video", "results"]
 SinkMode = Literal["auto", "gl", "kms", "window"]
 # Fade shapes (player/base.py fade_value): linear alpha, smoothstep, linear in perceived lightness.
 FadeCurve = Literal["linear", "scurve", "perceptual"]
@@ -168,6 +169,14 @@ class NotifySettings(_Section):
     min_interval_s: float = Field(30.0, ge=0)   # rate limit per event type
 
 
+class ResultsSettings(_Section):
+    """Audience-vote results graph (docs/results.md)."""
+    design_url: str = ""       # design manifest URL for /proj/design/fetch
+    in_s: float = Field(1.3, ge=0)    # overlay fade + fade-in of one paragraph
+    out_s: float = Field(0.8, ge=0)   # total out-animation
+    para_gap_s: float = Field(2.5, ge=0)  # start of one paragraph to the start of the next
+
+
 class Settings(_Section):
     device: DeviceSettings = Field(default_factory=DeviceSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
@@ -179,6 +188,7 @@ class Settings(_Section):
     backup: BackupSettings = Field(default_factory=BackupSettings)
     notify: NotifySettings = Field(default_factory=NotifySettings)
     beamer: BeamerSettings = Field(default_factory=BeamerSettings)
+    results: ResultsSettings = Field(default_factory=ResultsSettings)
 
     # Not read from TOML: where the settings came from, and whether we run in PC dev mode.
     config_path: Path | None = Field(default=None, exclude=True)
@@ -306,7 +316,8 @@ class Cue(BaseModel):
 
     id: str
     name: str = ""
-    video: str
+    type: CueType = "video"  # "results": audience-vote graph, no video (docs/results.md)
+    video: str = ""
     fade_in: float | None = None
     fade_out: float | None = None
     pause_points: list[float] | None = None
@@ -316,12 +327,14 @@ class Cue(BaseModel):
 
     @field_validator("id", "video", mode="before")
     @classmethod
-    def _str(cls, v: Any) -> Any:
+    def _str(cls, v: Any, info: ValidationInfo) -> Any:
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             v = str(int(v)) if float(v).is_integer() else str(v)
+        if v is None:
+            v = ""
         if isinstance(v, str):
             v = v.strip()
-            if not v:
+            if not v and info.field_name == "id":
                 raise ValueError("must not be empty")
         return v
 
@@ -356,6 +369,10 @@ class Show(BaseModel):
             if c.id in seen:
                 raise ValueError(f"duplicate cue id {c.id!r}")
             seen.add(c.id)
+            if c.type == "results":
+                continue
+            if not c.video:
+                raise ValueError(f"cue {c.id!r} (#{i + 1}) needs a video")
             v = self.videos.get(c.video)
             if v is None:
                 raise ValueError(f"cue {c.id!r} (#{i + 1}) references unknown video {c.video!r}")
@@ -550,6 +567,8 @@ def resolve_cue(show: Show, index: int, media_dir: Path) -> Clip:
         c = show.cues[index]
     except IndexError:
         raise ProjektorError(f"unknown cue #{index + 1}") from None
+    if c.type == "results":
+        raise ProjektorError(f"cue {c.id!r} is a results cue (no clip)")
     v = show.videos.get(c.video)
     if v is None:
         raise ProjektorError(f"cue {c.id!r} references unknown video {c.video!r}")

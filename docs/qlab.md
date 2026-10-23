@@ -51,10 +51,28 @@ Pick one style and stick to it (ids are safer if you reorder cues in the web UI)
 | `/proj/status 1` / `/proj/status 0` | show / hide the status screen (only when nothing plays) |
 | `/proj/reload` | reload show.json |
 | `/proj/ping` | reply `/proj/pong <device name>` |
+| `/proj/results/set 41 17 3` | store vote results (normally sent by the bridge, see below) |
+| `/proj/design/fetch` | download the results-graph design (needs internet on the Pi) |
 | `/proj/state` | reply `/proj/state <json>` (WiFi only – too large for LoRa) |
 
 Replies go back to the sender (WiFi) or via the bridge to `--reply-to` / the last sender.
 QLab ignores them; to watch replies use a tool such as Protokol and `--reply-to 127.0.0.1:<port>`.
+
+### Audience vote ("Die Welle"), see docs/results.md
+
+1. Start the bridge with the website's results API: `--results-url https://example.org/welle/api/results`.
+2. **Before the show** (Pi on WiFi with internet): a Network cue (or the web UI System tab, "Load design")
+   with `/proj/design/fetch` fetches the graph design from the vote website; the Pi replies
+   `/proj/design/ok <version>`. Without it the bundled default design is used.
+3. When voting is over: Network cue to the **bridge patch** (UDP port 9001, not the Pi) with the message
+   `/bridge/results`. The bridge reads the counts from the website and sends `/proj/results/set ja nein poll`
+   over LoRa (and WiFi). It answers QLab `/bridge/results/ok ja nein poll` or `/bridge/error <msg>`.
+   Repeat it as often as you like; the Pi only stores the numbers.
+4. In the web UI Cues tab add a **Results cue** at the position in the cue list where the graph should
+   appear and run it with `/proj/cue` / `/proj/go` like any other cue. It animates in with the stored
+   results and stays until the next cue (the graph animates out while that cue starts),
+   `/proj/fadeout` (animates out) or `/proj/stop` (cut). No results stored yet: it shows 0 / 0.
+   The Cues/System tabs show the stored results and the design version in use.
 
 ### Redundancy: prefer `/proj/cue <n>`
 
@@ -89,7 +107,7 @@ Run manually:
 projektor-bridge --serial '/dev/cu.usbmodem*' --wifi-target 192.168.1.42:9000
 ```
 
-Options: `--listen 0.0.0.0:9001` (default), `--repeat 2`, `--repeat-gap-ms auto`,
+Options: `--results-url URL` (vote website API, see above), `--listen 0.0.0.0:9001` (default), `--repeat 2`, `--repeat-gap-ms auto`,
 `--reply-to HOST:PORT`, `--sf/--bw` (must match the adapters, only for airtime math),
 `--duty-cycle 1.0`, `-v`. The serial device may be a glob; the bridge waits for the adapter
 and reconnects automatically (2 s poll) if it is unplugged. Each command is logged with path and seq:
@@ -147,4 +165,5 @@ or run the bridge once from Terminal so the prompt appears.
 1. Network cue `/proj/ping` on the LoRa patch → bridge log shows `reply via lora … /proj/pong`
    (TXD/RXD LEDs flash on both adapters).
 2. Web UI / status screen: `lora: connected …`, OSC listening.
-3. Pull the WiFi (or the LoRa adapter) and fire a `/proj/cue` – the other path must carry it.
+3. Voting set-up: fire `/proj/design/fetch` and `/bridge/results` once; the bridge log must show `/bridge/results: ja=… nein=…` and QLab gets `/bridge/results/ok`.
+4. Pull the WiFi (or the LoRa adapter) and fire a `/proj/cue` – the other path must carry it.

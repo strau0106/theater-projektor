@@ -10,6 +10,8 @@ backups and remote maintenance go through a server (`infmk1`).
 - Cues with fades, pause points (stop at a frame, continue with GO), hold/loop/black at
   the end. Image cues (JPEG/PNG/WebP) fade in, stay until the next cue and fade out on
   `/proj/fadeout`, with per-image / per-cue fade times.
+- Audience-vote results: a results cue shows the animated results slide (design exported from the
+  vote website, cached on the Pi) with the votes the bridge fetched; see `docs/results.md`.
 - WiFi: known networks with priorities, retry every 15 s, fallback hotspot
   `projektor-XXXX` (web UI at <http://10.42.0.1/>).
 - Remote: reverse SSH tunnel to infmk1, rsync backup/restore of media + show.

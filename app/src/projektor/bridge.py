@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import logging
 import queue
 import select
@@ -25,6 +26,8 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 
 from . import lora_proto as lp
@@ -33,6 +36,27 @@ from .transport.lora import SerialLink, resolve_device
 log = logging.getLogger("projektor.bridge")
 
 DUTY_WINDOW_S = 3600.0
+RESULTS_TIMEOUT_S = 3.0
+
+
+def fetch_results(url: str, timeout: float = RESULTS_TIMEOUT_S) -> tuple[int, int, int]:
+    """GET the vote website's /api/results -> (ja, nein, poll_id). Raises ValueError (message for QLab)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "projektor-bridge", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(1 << 16)
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"results: HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise ValueError(f"results: {getattr(exc, 'reason', exc)}") from exc
+    try:
+        d = json.loads(body)
+        ja, nein, poll = int(d["ja"]), int(d["nein"]), int(d.get("poll_id", 0))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"results: bad response ({exc})") from exc
+    if min(ja, nein, poll) < 0:
+        raise ValueError("results: negative numbers in response")
+    return ja, nein, poll
 
 
 def parse_hostport(text: str, default_host: str = "127.0.0.1") -> tuple[str, int]:
@@ -96,7 +120,9 @@ class Bridge:
         cr: int = 1,
         duty_limit: float = 0.01,
         poll_s: float = 2.0,
+        results_url: str | None = None,
     ):
+        self.results_url = results_url
         self.serial_pattern = serial
         self.baud = baud
         self.listen = listen
@@ -201,6 +227,20 @@ class Bridge:
         except ValueError as exc:
             log.warning("from %s: %s", addr, exc)
             return
+        if any(a.startswith("/bridge/") for a, _ in messages):
+            # handled here, never forwarded; the rest of a bundle goes out as usual
+            for payload in lp.split_osc_messages(data):
+                (addr0, args0), = lp.parse_osc(payload)
+                if addr0.startswith("/bridge/"):
+                    self._bridge_command(addr0, args0, addr)
+                else:
+                    self.forward_osc(payload, addr)
+            return
+        self.forward_osc(data, addr)
+
+    def forward_osc(self, data: bytes, addr: Any = None) -> None:
+        """Send an OSC packet to the Pi: WiFi (optional) + LoRa frames."""
+        messages = lp.parse_osc(data)
         desc = "; ".join(lp.format_msg(a, p) for a, p in messages)
         if self.wifi_target and self.sock_wifi is not None:
             try:
@@ -225,6 +265,42 @@ class Bridge:
                 continue
             text = "; ".join(lp.format_msg(a, p) for a, p in lp.parse_osc(payload))
             self._queue.put((seq, wire, text))
+
+    # -- /bridge/... commands (QLab -> bridge) -----------------------------------------
+
+    def _bridge_reply(self, address: str, args: list, to: Any) -> None:
+        target = self.reply_to or (tuple(to[:2]) if to else None) or self._reply_target()
+        payload = lp.build_osc(address, args)
+        if target is None or self.sock_in is None:
+            log.info("%s (no reply target): %s", address, lp.format_msg(address, args))
+            return
+        try:
+            self.sock_in.sendto(payload, target)
+        except OSError as exc:
+            log.warning("reply -> %s:%d failed: %s", target[0], target[1], exc)
+
+    def _bridge_command(self, address: str, args: list, addr: Any) -> None:
+        if address == "/bridge/results":
+            # blocking HTTP GET: not on the UDP thread (a slow website must not stall other cues)
+            threading.Thread(target=self._bridge_results, args=(addr,), name="bridge-results", daemon=True).start()
+        else:
+            log.warning("unknown bridge command %s", address)
+            self._bridge_reply("/bridge/error", [f"unknown bridge command {address}"], addr)
+
+    def _bridge_results(self, addr: Any) -> None:
+        if not self.results_url:
+            log.warning("/bridge/results: no --results-url configured")
+            self._bridge_reply("/bridge/error", ["results url not configured (--results-url)"], addr)
+            return
+        try:
+            ja, nein, poll = fetch_results(self.results_url)
+        except ValueError as exc:
+            log.warning("/bridge/results failed: %s", exc)
+            self._bridge_reply("/bridge/error", [str(exc)], addr)
+            return
+        log.info("/bridge/results: ja=%d nein=%d poll=%d", ja, nein, poll)
+        self.forward_osc(lp.build_osc("/proj/results/set", [ja, nein, poll]), addr)
+        self._bridge_reply("/bridge/results/ok", [ja, nein, poll], addr)
 
     def _send_loop(self) -> None:
         while not self._stop.is_set():
@@ -340,6 +416,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also forward the raw OSC over UDP to the Pi")
     p.add_argument("--reply-to", type=parse_hostport, metavar="HOST:PORT",
                    help="send replies here (default: last OSC sender)")
+    p.add_argument("--results-url", metavar="URL",
+                   help="vote website results API (e.g. https://example.org/welle/api/results); "
+                        "OSC /bridge/results fetches it and sends /proj/results/set to the Pi")
     p.add_argument("--sf", type=int, default=7, help="LoRa spreading factor configured on the adapters (airtime calc)")
     p.add_argument("--bw", type=int, default=500, choices=(125, 250, 500), help="LoRa bandwidth kHz (airtime calc)")
     p.add_argument("--duty-cycle", type=float, default=1.0, help="duty cycle limit in %% (default 1.0, EU868 g1)")
@@ -364,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     bridge = Bridge(
         serial=args.serial, baud=args.baud, listen=args.listen, repeat=args.repeat,
         repeat_gap_ms=args.repeat_gap_ms, wifi_target=args.wifi_target, reply_to=args.reply_to,
-        sf=args.sf, bw_khz=args.bw, duty_limit=args.duty_cycle / 100.0,
+        sf=args.sf, bw_khz=args.bw, duty_limit=args.duty_cycle / 100.0, results_url=args.results_url,
     )
     try:
         bridge.start()

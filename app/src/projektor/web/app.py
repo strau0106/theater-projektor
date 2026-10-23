@@ -143,6 +143,8 @@ def create_app(
     wifi = WifiCli(wifi_cmd if wifi_cmd is not None else _cfg(settings, "web.wifi_cmd") or default_wifi_cmd(data_dir, dev_mode))
     power = power_cmds if power_cmds is not None else default_power_cmds(dev_mode)
     backup_mgr = backup or BackupManager(settings, show_store, controller)
+    if getattr(backup_mgr, "wifi", None) is None:
+        backup_mgr.wifi = wifi
     auto_backup = None
     if backup is None:  # injected managers (tests) get no background auto-backup
         from projektor.autobackup import AutoBackup
@@ -150,6 +152,7 @@ def create_app(
         auto_backup = AutoBackup(backup_mgr, settings).start()
         backup_mgr.auto = auto_backup
         access.on_change = auto_backup.trigger
+        controller.on_state_change = auto_backup.trigger
     prober = prober or Prober()
     notifier = notifier or getattr(dispatcher, "notifier", None)
     static_dir = Path(static_dir or STATIC_DIR)
@@ -524,13 +527,15 @@ def create_app(
 
         def mut(show):
             cues = show.setdefault("cues", [])
-            cue = {"id": None, "name": "", "video": None, "fade_in": None, "fade_out": None,
+            cue = {"id": None, "name": "", "type": "video", "video": None, "fade_in": None, "fade_out": None,
                    "pause_points": None, "end": None, "start_at": None}
             fields = dict(body)
             if not str(fields.get("id") or "").strip():
                 fields["id"] = next_cue_id(cues)
             apply_cue_fields(cue, fields)
-            if cue["video"] not in show.get("videos", {}):
+            if cue["type"] == "results":
+                cue["video"] = ""
+            elif cue["video"] not in show.get("videos", {}):
                 raise ShowEditError(f"unknown video: {cue['video']}", 422)
             if any(str(c.get("id")) == cue["id"] for c in cues):
                 raise ShowEditError(f"cue id exists: {cue['id']}", 409)
@@ -552,8 +557,10 @@ def create_app(
             apply_cue_fields(cue, body)
             if cue["id"] != cue_id and any(str(c.get("id")) == cue["id"] for c in cues):
                 raise ShowEditError(f"cue id exists: {cue['id']}", 409)
-            if cue["video"] not in show.get("videos", {}):
-                raise ShowEditError(f"unknown video: {cue['video']}", 422)
+            if cue.get("type") == "results":
+                cue["video"] = ""
+            elif cue.get("video") not in show.get("videos", {}):
+                raise ShowEditError(f"unknown video: {cue.get('video')}", 422)
             cues[i] = cue
             return cue
 
@@ -691,6 +698,31 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         return {"ok": True}
 
+    # ------------------------------------------------------------------ results / design
+
+    def results_info() -> dict:
+        return {"results": controller.results.get(), "design": controller.design.status()}
+
+    @api.get("/results")
+    def results_get():
+        return results_info()
+
+    @api.post("/results")
+    def results_set(body: dict = Body(...)):
+        try:
+            controller.set_results(int(body.get("ja", 0)), int(body.get("nein", 0)), int(body.get("poll_id", 0)))
+        except (TypeError, ValueError, ProjektorError) as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, **results_info()}
+
+    @api.post("/design/fetch")
+    def design_fetch(body: dict = Body(default={})):
+        try:
+            controller.design_fetch(str(body.get("url") or "").strip() or None)
+        except ProjektorError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, **results_info()}
+
     # ------------------------------------------------------------------ system
 
     @api.get("/system")
@@ -733,11 +765,17 @@ def create_app(
                 raise HTTPException(400, "WPA password must be 8..63 characters")
         else:
             raise HTTPException(400, "security must be psk, eap or open")
-        return wifi.add(ssid, psk, prio, eap)
+        res = wifi.add(ssid, psk, prio, eap)
+        if auto_backup is not None:
+            auto_backup.trigger("wifi added")
+        return res
 
     @api.delete("/wifi/{ssid}")
     def wifi_remove(ssid: str):
-        return wifi.remove(ssid)
+        res = wifi.remove(ssid)
+        if auto_backup is not None:
+            auto_backup.trigger("wifi removed")
+        return res
 
     @api.post("/wifi/scan")
     def wifi_scan():
@@ -772,7 +810,8 @@ def create_app(
     @api.post("/backup/restore")
     def backup_restore(body: dict = Body(default={})):
         body = body or {}
-        return backup_mgr.restore(body.get("snapshot") or "latest", bool(body.get("media")))
+        return backup_mgr.restore(body.get("snapshot") or "latest", bool(body.get("media")),
+                                  bool(body.get("state")), bool(body.get("config")))
 
     @api.post("/notify/test")
     def notify_test():

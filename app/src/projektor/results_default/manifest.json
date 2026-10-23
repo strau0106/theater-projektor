@@ -1,0 +1,13 @@
+{
+  "version": "278ebffb5101",
+  "width": 1920,
+  "height": 1080,
+  "template": "template.svg",
+  "fonts": [
+    {
+      "family": "Arimo",
+      "file": "Arimo-Bold.ttf",
+      "url": "fonts/Arimo-Bold.ttf"
+    }
+  ]
+}

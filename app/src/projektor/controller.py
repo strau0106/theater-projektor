@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol
 from . import ProjektorError
 from .config import Settings, Show, ShowStore, resolve_cue, resolve_cue_ref, resolve_video
 from .player.base import ACTIVE_STATES, Player
+from .results import DesignStore, ResultsStore
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ class Controller:
             self._error = str(e)
         self._cue_index: int | None = None
         self._standby_index: int | None = 0 if self._show.cues else None
+        self.results = ResultsStore(settings.paths.data_dir)
+        self.design = DesignStore(settings.paths.data_dir, settings.results.design_url)
+        player.results_design = self.design
         self._status_screen = bool(settings.display.status_on_boot)
         self._last_command: dict | None = None
         self._transports: dict[str, Any] = {
@@ -121,8 +125,8 @@ class Controller:
         with self._lock:
             si = self._standby_index
             show = self._show
-        if si is None or si >= len(show.cues):
-            p.discard_prepared()
+        if si is None or si >= len(show.cues) or show.cues[si].type == "results":
+            p.discard_prepared()  # nothing to preload (end of list / results cue has no clip)
             return
         try:
             clip = resolve_cue(show, si, self._media_dir())
@@ -135,7 +139,7 @@ class Controller:
         """Periodic (≈1 s, player thread): refresh status text, push position updates."""
         self._sync_prepare()
         self._apply_status()
-        if self.player.state != "idle":
+        if self.player.state != "idle" or self.player.results_visible:
             self._notify()
         return True
 
@@ -156,7 +160,7 @@ class Controller:
         return self.show_store.media_dir
 
     def _status_visible(self) -> bool:
-        return self._status_screen and self.player.state == "idle"
+        return self._status_screen and self.player.state == "idle" and not self.player.results_visible
 
     def _apply_status(self) -> None:
         visible = self._status_visible()
@@ -220,6 +224,9 @@ class Controller:
             cue = show.cues[idx]
             nxt = idx + 1 if idx + 1 < len(show.cues) else None
         p = self.player
+        if cue.type == "results":
+            self._run_results_cue(idx, cue, nxt, force)
+            return
         playing_same = (
             p.state in ("fading_in", "playing", "paused", "holding")
             and p.clip is not None
@@ -233,11 +240,92 @@ class Controller:
             return
         clip = resolve_cue(show, idx, self._media_dir())
         log.info("cue %s (#%d) -> video %s", cue.id, idx + 1, clip.video_id)
+        p.results_hide(None)  # a graph from a results cue animates out while this cue starts
         with self._lock:
             self._cue_index = idx
             self._standby_index = nxt
             self._error = None
         p.play(clip)
+
+    def _run_results_cue(self, idx: int, cue, nxt: int | None, force: bool) -> None:
+        """Results cue (player thread): animate the graph in with the stored results."""
+        p = self.player
+        with self._lock:
+            same = self._cue_index == idx
+        if p.results_visible and same and not force:
+            log.info("cue %s already shown (idempotent)", cue.id)
+            with self._lock:
+                self._standby_index = nxt
+            return
+        stored = self.results.get()
+        if stored is None:
+            log.warning("results cue %s: no results stored yet, showing 0 / 0", cue.id)
+        ja, nein = (stored["ja"], stored["nein"]) if stored else (0, 0)
+        log.info("cue %s (#%d) -> results %d : %d", cue.id, idx + 1, ja, nein)
+        with self._lock:
+            self._cue_index = idx
+            self._standby_index = nxt
+            self._error = None
+        try:
+            p.results_show(ja, nein)
+        except ProjektorError as e:
+            self._set_error(str(e))
+            return
+        if p.state != "idle" and p.clip is not None:  # the previous cue fades out underneath
+            p.fadeout(p.clip.fade_out)
+
+    # ------------------------------------------------------------------ results / design
+    def set_results(self, ja: int, nein: int, poll_id: int = 0) -> dict:
+        """Store the vote results (persisted); the graph shows them when a results cue runs."""
+        for name, v in (("ja", ja), ("nein", nein), ("poll_id", poll_id)):
+            if v < 0 or v > 2**31 - 1:
+                raise ProjektorError(f"{name}: out of range")
+        data = self.results.set(ja, nein, poll_id)
+        self.executor.submit(self._notify)
+        self._state_changed("results")
+        return data
+
+    def _state_changed(self, what: str) -> None:
+        cb = getattr(self, "on_state_change", None)  # auto-backup hook (set by the web app)
+        if cb is not None:
+            cb(what)
+
+    def reload_state(self) -> None:
+        """Re-read results.json and the design cache after they were restored from a backup."""
+        self.results.reload()
+        self.design.load(force=True)
+        self.executor.submit(self._do_design_changed)
+
+    def design_fetch(self, url: str | None, done: Callable[[tuple[str, list]], None] | None = None) -> None:
+        """Download the design bundle in a worker thread; `done((address, args))` gets the reply."""
+        if not (url or self.settings.results.design_url).strip():
+            raise ProjektorError("no design url (set [results] design_url or pass a url)")
+        if self.design.status()["fetching"]:
+            raise ProjektorError("design fetch already running")
+
+        def work() -> None:
+            try:
+                version, _changed = self.design.fetch(url)
+                reply = ("/proj/design/ok", [version])
+                self.executor.submit(self._do_design_changed)
+                self._state_changed("design")
+            except ProjektorError as e:
+                log.warning("design fetch failed: %s", e)
+                reply = ("/proj/error", [str(e)])
+            except Exception as e:  # noqa: BLE001
+                log.exception("design fetch crashed")
+                reply = ("/proj/error", [f"internal error: {e}"])
+            if done is not None:
+                try:
+                    done(reply)
+                except Exception:  # noqa: BLE001
+                    log.exception("design fetch reply failed")
+
+        threading.Thread(target=work, name="design-fetch", daemon=True).start()
+
+    def _do_design_changed(self) -> None:
+        self.player.reload_results_design()
+        self._notify()
 
     def standby(self, ref: str | int) -> None:
         idx = self._resolve_ref(ref)
@@ -275,6 +363,7 @@ class Controller:
             self._set_error(str(e))
         else:
             log.info("play video %s", video_id)
+            self.player.results_hide(None)
             with self._lock:
                 self._cue_index = None
                 self._error = None
@@ -304,6 +393,7 @@ class Controller:
             if p.state == "paused":
                 p.resume()
         elif what == "stop":
+            p.results_clear()
             p.stop()
         self._sync_prepare()
         self._apply_status()
@@ -319,6 +409,7 @@ class Controller:
 
     def _do_fadeout(self, seconds: float | None) -> None:
         p = self.player
+        p.results_hide(None)
         if p.state != "idle" and p.clip is not None:
             s = p.clip.fade_out if seconds is None else seconds
             p.fadeout(s)
@@ -426,7 +517,10 @@ class Controller:
                     except Exception as e:  # noqa: BLE001
                         v = f"error: {e}"
                 transports[k] = v
-            return {
+            results_up = p.results_visible
+        if results_up and pstate == "idle":
+            pstate = "holding"  # a results cue holds like an image cue
+        return {
                 "state": pstate,
                 "pause_reason": p.pause_reason if pstate == "paused" else None,
                 "cue": show.cues[ci].id if ci is not None and ci < len(show.cues) else None,
@@ -441,6 +535,8 @@ class Controller:
                 "last_command": dict(self._last_command) if self._last_command else None,
                 "transports": transports,
                 "error": self._error,
+                "results": {"stored": self.results.get(), "visible": results_up},
+                "design": self.design.status(),
             }
 
     def subscribe(self, cb: Callable[[dict], None]) -> Callable[[], None]:

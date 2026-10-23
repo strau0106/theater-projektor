@@ -125,7 +125,7 @@
 <!-- ================================================================ CUES -->
 <section class="tab" id="tab-cues">
   <div class="card">
-    <div class="row"><h2 class="grow" style="margin:0">Cue list</h2><button class="primary" id="cueAdd">+ Add cue</button></div>
+    <div class="row"><h2 class="grow" style="margin:0">Cue list</h2><button id="cueAddResults">+ Results cue</button><button class="primary" id="cueAdd">+ Add cue</button></div>
     <p class="muted small">Empty override fields inherit from the video / image. Changes are saved immediately and reloaded into the player.</p>
     <div id="cueList"></div>
   </div>
@@ -139,6 +139,15 @@
     <h3>Remote tunnel</h3><div class="kv" id="sysTunnel"></div>
     <h3>Device</h3><div class="kv" id="sysDevice"></div>
     <h3>Transports</h3><div class="kv" id="sysTransports"></div>
+  </div>
+
+  <div class="card">
+    <h2>Results graph</h2>
+    <div class="kv" id="resKv"></div>
+    <div class="row" style="margin-top:8px">
+      <input class="grow mono" id="designUrl" placeholder="design URL (empty = [results] design_url)" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="designFetch">Load design</button>
+    </div>
   </div>
 
   <div class="card">
@@ -193,6 +202,15 @@
     </div>
     <div class="row" style="margin-top:8px">
       <label class="inline grow"><input type="checkbox" id="bkMedia"> also restore video files</label>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <label class="inline grow"><input type="checkbox" id="bkState"> also restore results + design (latest backup)</label>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <label class="inline grow"><input type="checkbox" id="bkConfig"> also restore settings (projektor.toml) + WiFi networks (latest backup, restart needed)</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="grow"></div>
       <button class="danger" id="bkRestore">Restore</button>
     </div>
     <pre class="replies" id="bkLog"></pre>

@@ -171,6 +171,30 @@ class Player(ABC):
     def prepared_clip(self) -> Clip | None:
         return None
 
+    # ------------------------------------------------------------------ results overlay
+    # Audience-vote graph on top of whatever is shown (docs/results.md); GL display only.
+    results_design = None  # DesignStore, set by the controller
+
+    @property
+    def supports_results(self) -> bool:
+        return False
+
+    @property
+    def results_visible(self) -> bool:
+        return False
+
+    def results_show(self, ja: int, nein: int) -> None:
+        """Animate the graph in (or to new values when already shown)."""
+
+    def results_hide(self, seconds: float | None = None) -> None:
+        """Animate the graph out (default: [results] out_s)."""
+
+    def results_clear(self) -> None:
+        """Remove the graph immediately."""
+
+    def reload_results_design(self) -> None:
+        """The design store has a new design."""
+
     def snapshot_png(self) -> bytes | None:
         """PNG of the current output frame, if supported."""
         return None

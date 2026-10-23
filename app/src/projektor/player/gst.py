@@ -10,6 +10,7 @@ Two kinds of pipelines:
         appsrc(live) ........................................ glvideomixer.sink_1  (video, alpha = fade)
         glvideomixer(background=black) ! GL caps(W x H @ fps)
           ! textoverlay(status) ! gloverlaycompositor ! glimagesink
+        appsrc(live, BGRA, results overlay) ................. glvideomixer.sink_2  (zorder 2, own alpha)
 
       CPU mode (sink kms, headless test sinks):
         intervideosrc ! videoconvert ! videoscale ! caps(W x H) ! videobalance(fade)
@@ -38,6 +39,14 @@ on the CPU - that was 80-110 % CPU on a Pi 4 for 1080p30 (the v0.1 player).
 Status screen (GL): textoverlay on the mixer output only attaches an overlay composition
 meta (no CPU blending), gloverlaycompositor draws it on the GPU. Not a mixer input: a
 low-fps live status source would raise the mixer latency (it queued 15 RGBA 1080p frames).
+
+Results overlay (GL only, results.py): a second appsrc on the mixer, above the video pad,
+full display size, pre-multiplied BGRA frames composed by the results Presenter only while
+it animates (the mixer keeps showing the last frame it got, like a held clip). The pad blends
+pre-multiplied (blend-function-src-rgb = constant-alpha); `alpha` and `blend-constant-color-alpha`
+are driven together by one GstController source, so the whole overlay fades in running time like
+a video fade. Hidden = alpha 0 and a flush (the mixer drops the frame). CPU/kms display: no
+overlay (`supports_results` is False; the dispatcher replies an error).
 
 Pause points: a blocking buffer probe on the clip sink pad lets the first frame with
 stream time >= pause point through, blocks the following one and pauses the clip pipeline,
@@ -87,7 +96,9 @@ try:
 except (ValueError, ImportError):  # pragma: no cover - depends on the GStreamer install
     GstController = None
 
+from .. import ProjektorError  # noqa: E402
 from ..config import Clip, Settings  # noqa: E402
+from ..results import Presenter  # noqa: E402
 from .base import Player, compute_state, fade_alpha  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -166,6 +177,12 @@ class _Display:
         self._binding = None  # GL: active alpha control binding
         self.status_visible = False
         self.status_text = ""
+        self.osrc: Gst.Element | None = None  # GL: results overlay appsrc
+        self._ov_pad = None
+        self._ov_binding: list = []
+        self._ov_caps = Gst.Caps.from_string(
+            f"video/x-raw,format=BGRA,width={width},height={height},framerate={fps}/1")
+        self._ov_seg: Gst.Segment | None = None
 
     @staticmethod
     def _textprops(w: int, h: int) -> str:
@@ -199,6 +216,8 @@ class _Display:
                 f"! video/x-raw,format=RGBA,width=16,height=16,framerate={F}/1 ! mix.sink_0 "
                 f"appsrc name=vsrc is-live=true format=time handle-segment-change=true min-latency=0 "
                 f"max-buffers=2 max-bytes=0 leaky-type=downstream ! mix.sink_1 "
+                f"appsrc name=osrc is-live=true format=time handle-segment-change=true min-latency=0 "
+                f"max-buffers=2 max-bytes=0 leaky-type=downstream ! mix.sink_2 "
             )
         else:
             if self.kind == "kms":
@@ -229,6 +248,18 @@ class _Display:
             self._video_pad.set_property("sizing-policy", 0)  # none
             self._vsize = None
             self.vsrc = p.get_by_name("vsrc")
+            self.osrc = p.get_by_name("osrc")
+            self._ov_pad = mix.get_static_pad("sink_2")
+            pad = self._ov_pad
+            pad.set_property("zorder", 2)
+            pad.set_property("xpos", 0)
+            pad.set_property("ypos", 0)
+            pad.set_property("width", W)
+            pad.set_property("height", H)
+            pad.set_property("sizing-policy", 0)
+            pad.set_property("blend-function-src-rgb", 12)  # constant-alpha: pre-multiplied source
+            self.ov_set_alpha(0.0)
+            self._ov_seg = None
         else:
             self._balance = p.get_by_name("bal")
         self.set_video_alpha(self.alpha)
@@ -247,6 +278,9 @@ class _Display:
             return
         self.pipeline = None
         self.vsrc = None
+        self.osrc = None
+        self._ov_pad = None
+        self._ov_binding = []
         self._binding = None
         self._held.clear()
         if self._bus_watch:
@@ -396,6 +430,80 @@ class _Display:
         self._held.clear()
         self._vseg = None
 
+    # ---- results overlay (GL)
+    def ov_now_ns(self) -> int:
+        p = self.pipeline
+        clock = p.get_clock() if p is not None else None
+        return 0 if clock is None else clock.get_time() - p.get_base_time()
+
+    def ov_push(self, frame, pts_ns: int) -> None:
+        """Push one BGRA frame (streaming-safe, any thread)."""
+        src = self.osrc
+        if src is None:
+            return
+        buf = Gst.Buffer.new_wrapped(bytes(frame))
+        buf.pts = max(0, int(pts_ns))
+        buf.duration = Gst.SECOND // self.fps
+        if self._ov_seg is None:
+            seg = Gst.Segment()
+            seg.init(Gst.Format.TIME)
+            self._ov_seg = seg
+        src.emit("push-sample", Gst.Sample.new(buf, self._ov_caps, self._ov_seg, None))
+
+    def _ov_clear_binding(self) -> None:
+        pad = self._ov_pad
+        if pad is None or not self._ov_binding:
+            return
+        a = float(pad.get_property("alpha"))
+        for b in self._ov_binding:
+            pad.remove_control_binding(b)
+        self._ov_binding = []
+        pad.set_property("alpha", a)
+        pad.set_property("blend-constant-color-alpha", a)
+
+    def ov_set_alpha(self, a: float) -> None:
+        pad = self._ov_pad
+        if pad is None:
+            return
+        self._ov_clear_binding()
+        a = min(1.0, max(0.0, a))
+        pad.set_property("alpha", a)
+        pad.set_property("blend-constant-color-alpha", a)
+
+    def ov_ramp(self, points: list) -> bool:
+        """Overlay alpha follows (running time ns, alpha) points (linear), GstController."""
+        pad = self._ov_pad
+        if pad is None or GstController is None:
+            return False
+        try:
+            self._ov_clear_binding()
+            cs = GstController.InterpolationControlSource()
+            cs.set_property("mode", GstController.InterpolationMode.LINEAR)
+            for prop in ("alpha", "blend-constant-color-alpha"):
+                b = GstController.DirectControlBinding.new(pad, prop, cs)
+                pad.add_control_binding(b)
+                self._ov_binding.append(b)
+            for t, a in points:
+                cs.set(max(0, int(t)), float(a))
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("overlay ramp unavailable (%s)", e)
+            self._ov_binding = []
+            return False
+
+    def ov_release(self) -> None:
+        """Hidden: replace the held overlay frame by a transparent one (alpha must be 0).
+
+        No flush on the appsrc: on the Pi (GLES) a flushed mixer pad lost its caps, and the
+        next caps change on another pad (new clip) made gluploadelement fixate NULL caps and
+        froze the display on the last frame."""
+        src = self.osrc
+        if src is None:
+            return
+        caps = self._ov_caps.get_structure(0)
+        size = caps.get_value("width") * caps.get_value("height") * 4
+        self.ov_push(bytes(size), self.ov_now_ns())
+
     def snapshot_png(self) -> bytes | None:
         if self.sink is None:
             return None
@@ -438,6 +546,40 @@ class _Display:
             return bytes(info.data)
         finally:
             buf.unmap(info)
+
+
+class _OverlaySink:
+    """Presenter -> display adapter. Alpha/flush calls hop onto the GLib main loop."""
+
+    def __init__(self, display: _Display):
+        self.d = display
+
+    def now_ns(self) -> int:
+        return self.d.ov_now_ns()
+
+    def push(self, frame, pts_ns: int) -> None:
+        self.d.ov_push(frame, pts_ns)
+
+    def _main(self, fn, *args) -> None:
+        def cb() -> bool:
+            if self.d.pipeline is not None:
+                fn(*args)
+            return False
+
+        GLib.idle_add(cb)
+
+    def ramp_alpha(self, points) -> None:
+        def go() -> None:
+            if not self.d.ov_ramp(points):  # no controller: jump to the final value
+                self.d.ov_set_alpha(points[-1][1])
+
+        self._main(go)
+
+    def set_alpha(self, a: float) -> None:
+        self._main(self.d.ov_set_alpha, a)
+
+    def release(self) -> None:
+        self._main(self.d.ov_release)
 
 
 class _Run:
@@ -490,6 +632,8 @@ class GstPlayer(Player):
         self._display_ok = False
         self._rebuild_src: int | None = None
         self._shutting_down = False
+        self.presenter: Presenter | None = None
+        self.results_design = None  # DesignStore, set by the controller
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -506,6 +650,8 @@ class GstPlayer(Player):
         d.status_text = self._status_text
         d.alpha = 1.0 if self._run is not None and self._run.phase == "started" and self._fade_dir == 0 else 0.0
         self.discard_prepared()  # built for the old display
+        if self.presenter is not None:
+            self.presenter.attach(None)  # overlay of the old display is gone
         self._display = d
         self.kind = kind
         self._display_ok = False
@@ -519,6 +665,8 @@ class GstPlayer(Player):
                 self._start_display("kms")
                 return
             raise
+        if self.presenter is not None and d.gl:
+            self.presenter.attach(_OverlaySink(d))
         # consider the display healthy after a few seconds without error
         GLib.timeout_add(3000, self._mark_display_ok, d)
 
@@ -560,6 +708,8 @@ class GstPlayer(Player):
                 setattr(self, attr, None)
         self.discard_prepared()
         self._unload()
+        if self.presenter is not None:
+            self.presenter.close()
         if self._display is not None:
             self._display.destroy()
             self._display = None
@@ -1113,6 +1263,42 @@ class GstPlayer(Player):
         self._status_visible = bool(visible)
         self._status_text = text
         self._apply_status()
+
+    # ------------------------------------------------------------------ results overlay
+    @property
+    def supports_results(self) -> bool:
+        return self._display is not None and self._display.gl
+
+    def _presenter(self) -> Presenter:
+        if self.presenter is None:
+            st = self.settings
+            self.presenter = Presenter(self.results_design, st.display.width, st.display.height,
+                                       st.display.fps, st.results.in_s, st.results.out_s,
+                                       st.results.para_gap_s)
+            if self._display is not None and self._display.gl:
+                self.presenter.attach(_OverlaySink(self._display))
+        return self.presenter
+
+    def results_show(self, ja: int, nein: int) -> None:
+        if not self.supports_results or self.results_design is None:
+            raise ProjektorError("results overlay needs GL display")
+        self._presenter().show(ja, nein)
+
+    def results_hide(self, seconds: float | None = None) -> None:
+        if self.presenter is not None:
+            self.presenter.hide(seconds)
+
+    def results_clear(self) -> None:
+        if self.presenter is not None:
+            self.presenter.clear()
+
+    def reload_results_design(self) -> None:
+        if self.presenter is not None:
+            self.presenter.reload_design()
+
+    @property
+    def results_visible(self) -> bool:
+        return self.presenter is not None and self.presenter.visible
 
     def snapshot_png(self) -> bytes | None:
         if self._display is None:

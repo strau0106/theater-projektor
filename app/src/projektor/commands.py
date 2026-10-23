@@ -47,6 +47,13 @@ def coerce_float(v: Any, what: str = "argument") -> float:
     return f
 
 
+def coerce_int(v: Any, what: str = "argument") -> int:
+    f = coerce_float(v, what)
+    if not f.is_integer():
+        raise ProjektorError(f"{what}: expected an integer, got {v!r}")
+    return int(f)
+
+
 def coerce_ref(v: Any) -> str | int:
     """Cue ref: int (1-based number) or str (cue id). Integral floats become ints."""
     if isinstance(v, bool):
@@ -147,6 +154,8 @@ class CommandDispatcher:
             "beamer/key": self._beamer_key,
             "beamer/source": self._beamer_source,
             "notify/test": self._notify_test,
+            "results/set": self._results_set,
+            "design/fetch": self._design_fetch,
         }
 
     # ------------------------------------------------------------------ dedup
@@ -167,7 +176,10 @@ class CommandDispatcher:
         return False
 
     # ------------------------------------------------------------------ entry point
-    def handle(self, address: str, args: list | tuple | None, source: str) -> list[Reply]:
+    def handle(self, address: str, args: list | tuple | None, source: str,
+               reply: Callable[[str, list], None] | None = None) -> list[Reply]:
+        """Run one command. `reply(address, args)` delivers a late reply to the sender
+        (commands that finish in a worker thread, e.g. /proj/design/fetch)."""
         args = list(args or [])
         try:
             if not isinstance(address, str) or not address.startswith(PREFIX):
@@ -184,6 +196,8 @@ class CommandDispatcher:
                 self.controller.record_command(address, args, source)
             except Exception:  # noqa: BLE001
                 log.exception("record_command failed")
+            if name == "design/fetch":
+                return self._design_fetch(args, reply)
             return handler(args)
         except ProjektorError as e:
             log.warning("command error: %s %s (%s): %s", address, args, source, e)
@@ -263,6 +277,27 @@ class CommandDispatcher:
         self._nargs(args, 0, 0, "/proj/notify/test")
         n = self.notifier
         return [("/proj/notify/test", [n.test() if n is not None else "disabled"])]
+
+    def _results_set(self, args: list) -> list[Reply]:
+        self._nargs(args, 2, 3, "/proj/results/set <ja> <nein> [poll_id]")
+        ja = coerce_int(args[0], "ja")
+        nein = coerce_int(args[1], "nein")
+        poll = coerce_int(args[2], "poll_id") if len(args) > 2 else 0
+        d = self.controller.set_results(ja, nein, poll)
+        return [("/proj/results/ok", [d["ja"], d["nein"], d["poll_id"]])]
+
+    def _design_fetch(self, args: list, reply: Callable[[str, list], None] | None = None) -> list[Reply]:
+        self._nargs(args, 0, 1, "/proj/design/fetch [url]")
+        url = coerce_str(args[0], "url") if args else None
+        if url is not None and not url.lower().startswith(("http://", "https://")):
+            raise ProjektorError(f"url: expected http(s)://..., got {url!r}")
+
+        def done(r: Reply) -> None:
+            if reply is not None:
+                reply(r[0], r[1])
+
+        self.controller.design_fetch(url, done)
+        return []
 
     def _state(self, args: list) -> list[Reply]:
         return [("/proj/state", [json.dumps(self.controller.state(), separators=(",", ":"))])]

@@ -279,7 +279,8 @@ class LoraTransport:
         for address, args in messages:
             log.info("lora: seq=%d %s", frame.seq, lp.format_msg(address, args))
             try:
-                replies = self.dispatcher.handle(address, args, "lora") or []
+                replies = self.dispatcher.handle(
+                    address, args, "lora", reply=lambda a, r: self.send_reply(a, list(r))) or []
             except Exception:
                 log.exception("lora: dispatcher failed for %s", address)
                 continue

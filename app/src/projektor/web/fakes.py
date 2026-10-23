@@ -346,7 +346,7 @@ class FakeDispatcher:
         self.controller = controller
         self.calls: list[tuple] = []
 
-    def handle(self, address: str, args: list, source: str):
+    def handle(self, address: str, args: list, source: str, reply=None):
         self.calls.append((address, list(args), source))
         c = self.controller
         name = address.rsplit("/", 1)[-1]

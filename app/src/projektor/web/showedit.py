@@ -14,7 +14,7 @@ import threading
 from typing import Any
 
 VIDEO_FIELDS = ("file", "title", "in_point", "out_point", "pause_points", "fade_in", "fade_out", "end")
-CUE_FIELDS = ("id", "name", "video", "fade_in", "fade_out", "pause_points", "end", "start_at")
+CUE_FIELDS = ("id", "name", "type", "video", "fade_in", "fade_out", "pause_points", "end", "start_at")
 END_MODES = ("black", "hold", "loop")
 
 
@@ -194,9 +194,13 @@ def apply_video_fields(entry: dict, fields: dict) -> None:
 def apply_cue_fields(cue: dict, fields: dict) -> None:
     for k, v in fields.items():
         if k in ("id", "name", "video"):
-            if k != "name" and (v is None or str(v).strip() == ""):
+            if k not in ("name", "video") and (v is None or str(v).strip() == ""):
                 raise ShowEditError(f"cue {k} required", 422)
             cue[k] = "" if v is None else str(v).strip() if k != "name" else str(v)
+        elif k == "type":
+            if v not in ("video", "results"):
+                raise ShowEditError('type must be "video" or "results"', 422)
+            cue[k] = v
         elif k in ("fade_in", "fade_out", "start_at"):
             cue[k] = _num(v, k, allow_none=True)
         elif k == "pause_points":

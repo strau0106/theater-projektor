@@ -18,7 +18,7 @@ class FakeDispatcher:
         self.calls = []
         self.lock = threading.Lock()
 
-    def handle(self, address, args, source):
+    def handle(self, address, args, source, reply=None):
         with self.lock:
             self.calls.append((address, list(args), source))
         if address == "/proj/ping":
