@@ -750,7 +750,9 @@ $("cueAddResults").addEventListener("click", async () => {
 
 $("cueAdd").addEventListener("click", async () => {
   if (!S.show || !Object.keys(S.show.videos).length) return toast("upload a video first", true);
-  const lastVid = S.show.cues.length ? S.show.cues[S.show.cues.length - 1].video : Object.keys(S.show.videos)[0];
+  // video of the last cue that has one (a results cue has none), else the first video
+  const withVid = S.show.cues.filter((c) => c.video && S.show.videos[c.video]);
+  const lastVid = withVid.length ? withVid[withVid.length - 1].video : Object.keys(S.show.videos)[0];
   const r = await act(() => api("POST", "/api/cues", { name: "New cue", video: lastVid }));
   if (r) { S.editCue = r.cue.id; await loadShow(); renderCues(); }
 });
