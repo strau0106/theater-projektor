@@ -27,7 +27,7 @@ Pages:
 
 | Path | Who | What |
 |---|---|---|
-| `/vote` | audience (phones) | two buttons: **"Ja, ich bin für die Welle"** / **"Nein, ich bin gegen die Welle"**; one vote per browser per poll, final (no change); shows "Danke" after voting, "Abstimmung noch nicht gestartet" / "Abstimmung beendet" otherwise; polls status every few seconds |
+| `/vote` | audience (phones) | no title, two buttons: **"Mir gefällt die Welle"** (= ja) / **"Ich bin gegen die Welle"** (= nein); one vote per browser per poll, final (no change); after Ja the lollipop confirmation, after Nein "Danke. Wir haben deine Daten gespeichert, bis bald.", "Abstimmung noch nicht gestartet" / "Abstimmung beendet" otherwise; polls status every few seconds |
 | `/admin` | staff, password (`ADMIN_PASSWORD`) | live counts; **Neue Abstimmung starten** (closes current, starts new; everyone may vote again); **Abstimmung beenden**; preview of the projector graphic (exact template, 16:9, play in/out animation) and preview of `/vote`; QR code to `/vote` |
 | `/results` | public | full-screen live results slide (same template as projector) |
 

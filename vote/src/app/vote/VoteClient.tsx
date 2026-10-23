@@ -4,7 +4,6 @@ import { useState } from "react";
 import { LollipopSeal } from "./LollipopSeal";
 import { usePoll } from "@/components/usePoll";
 import { withBase } from "@/lib/base";
-import { QUESTION } from "@/design/tokens";
 
 type Status = { poll_id: number; status: "open" | "closed" | "none"; voted: boolean; choice: "ja" | "nein" | null; code: string | null };
 
@@ -35,16 +34,16 @@ export function VoteClient({ preview }: { preview: boolean }) {
   else if (data.status === "none") body = <Note title="Abstimmung noch nicht gestartet" text="Bitte einen Moment Geduld." />;
   else if (data.status === "closed" && !(data.voted && data.choice === "ja" && data.code)) body = <Note title="Abstimmung beendet" text="Danke fürs Mitmachen." />;
   else if (data.voted && data.choice === "ja" && data.code) body = <LollipopSeal poll={data.poll_id} code={data.code} />;
-  else if (data.voted) body = <Note title="Danke!" text="Deine Stimme wurde gezählt." />;
+  else if (data.voted) body = <Note title="Danke." text="Wir haben deine Daten gespeichert, bis bald." />;
   else
     body = (
       <>
         <div className="choices">
           <button className="choice ja" disabled={busy || preview} onClick={() => vote("ja")}>
-            Ja, ich bin für die Welle
+            Mir gefällt die Welle
           </button>
           <button className="choice nein" disabled={busy || preview} onClick={() => vote("nein")}>
-            Nein, ich bin gegen die Welle
+            Ich bin gegen die Welle
           </button>
         </div>
         <p className="note">Du kannst nur einmal abstimmen. Deine Antwort ist endgültig.</p>
@@ -54,9 +53,7 @@ export function VoteClient({ preview }: { preview: boolean }) {
 
   return (
     <main className="vote-bg" style={{ backgroundImage: `url(${withBase("/bg.jpg")})` }}>
-      <section className="card" aria-live="polite">
-        <p className="kicker">Die Welle</p>
-        <h1 className="display">{QUESTION}</h1>
+      <section className="card" aria-live="polite" aria-label="Die Welle – Abstimmung">
         {body}
       </section>
     </main>
