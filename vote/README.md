@@ -47,10 +47,10 @@ ProxyPassReverse /welle http://127.0.0.1:3100/welle
 
 ## Bridge and projector
 
-- The bridge (`projektor-bridge --results-url https://example.org/welle/api/results`) fetches `GET /api/results`
+- The bridge (`projektor-bridge --results-url https://vote.rufusreglet.ch/api/results`) fetches `GET /api/results`
   when QLab sends `/bridge/results` and forwards `ja`, `nein`, `poll_id` to the Pi as `/proj/results/show`.
 - The Pi fetches the design before the show (`/proj/design/fetch`, `[results] design_url =
-  "https://example.org/welle/api/design"`): the manifest lists `template.svg` and the Arimo Bold font (URLs relative
+  "https://vote.rufusreglet.ch/api/design"`): the manifest lists `template.svg` and the Arimo Bold font (URLs relative
   to the manifest URL); `version` is a content hash, so unchanged designs are not downloaded again.
 - Refresh the Pi's bundled default design after changing the look:
   `npm run export-design -- ../app/src/projektor/results_default` (writes `manifest.json`, `template.svg`,

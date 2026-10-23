@@ -171,7 +171,7 @@ class NotifySettings(_Section):
 
 class ResultsSettings(_Section):
     """Audience-vote results graph (docs/results.md)."""
-    design_url: str = ""       # design manifest URL for /proj/design/fetch
+    design_url: str = "https://vote.rufusreglet.ch/api/design"  # design manifest for /proj/design/fetch
     in_s: float = Field(1.3, ge=0)    # overlay fade + fade-in of one paragraph
     out_s: float = Field(0.8, ge=0)   # total out-animation
     para_hold_s: float = Field(6.0, ge=0)  # start of a paragraph's fade-in to the start of its fade-out

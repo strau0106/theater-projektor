@@ -60,7 +60,7 @@ QLab ignores them; to watch replies use a tool such as Protokol and `--reply-to 
 
 ### Audience vote ("Die Welle"), see docs/results.md
 
-1. Start the bridge with the website's results API: `--results-url https://example.org/welle/api/results`.
+1. Start the bridge with the website's results API: `--results-url https://vote.rufusreglet.ch/api/results`.
 2. **Before the show** (Pi on WiFi with internet): a Network cue (or the web UI System tab, "Load design")
    with `/proj/design/fetch` fetches the graph design from the vote website; the Pi replies
    `/proj/design/ok <version>`. Without it the bundled default design is used.

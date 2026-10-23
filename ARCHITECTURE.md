@@ -256,7 +256,7 @@ auto_delay_s = 10        # debounce; bursts coalesce; failures retry 30 s .. 15 
                          # (pending flag: data_dir/.backup_pending; media/ is never deleted remotely, state/ is a mirror)
 
 [results]                # audience-vote graph (docs/results.md)
-design_url = ""          # e.g. "https://example.org/welle/api/design"
+design_url = "https://vote.rufusreglet.ch/api/design"
 in_s = 1.3               # overlay fade + fade-in of one paragraph (scales the 1.3 s of the contract)
 out_s = 0.8              # total out-animation
 para_hold_s = 6.0        # start of a paragraph's fade-in to its fade-out (absolute; old name para_gap_s accepted)

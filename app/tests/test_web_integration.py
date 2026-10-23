@@ -39,6 +39,7 @@ def real(tmp_path):
                   "tunnel_status": str(tmp_path / "tunnel.json")},
         "lora": {"enabled": False},
         "backup": {"enabled": False},
+        "results": {"design_url": ""},
     })
     store = config.ShowStore.from_settings(settings)
     store.media_dir.mkdir(parents=True)

@@ -36,6 +36,7 @@ from .transport.lora import SerialLink, resolve_device
 log = logging.getLogger("projektor.bridge")
 
 DUTY_WINDOW_S = 3600.0
+DEFAULT_RESULTS_URL = "https://vote.rufusreglet.ch/api/results"
 RESULTS_TIMEOUT_S = 3.0
 
 
@@ -416,8 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also forward the raw OSC over UDP to the Pi")
     p.add_argument("--reply-to", type=parse_hostport, metavar="HOST:PORT",
                    help="send replies here (default: last OSC sender)")
-    p.add_argument("--results-url", metavar="URL",
-                   help="vote website results API (e.g. https://example.org/welle/api/results); "
+    p.add_argument("--results-url", metavar="URL", default=DEFAULT_RESULTS_URL,
+                   help=f"vote website results API (default {DEFAULT_RESULTS_URL}, '' = off); "
                         "OSC /bridge/results fetches it and sends /proj/results/set to the Pi")
     p.add_argument("--sf", type=int, default=7, help="LoRa spreading factor configured on the adapters (airtime calc)")
     p.add_argument("--bw", type=int, default=500, choices=(125, 250, 500), help="LoRa bandwidth kHz (airtime calc)")

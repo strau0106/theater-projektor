@@ -45,6 +45,7 @@ def make_settings(tmp_path: Path, **overrides):
         "osc": {"port": 0},
         "lora": {"enabled": False},
         "web": {"port": 8080},
+        "results": {"design_url": ""},  # tests never reach the real vote website
     }
     for k, v in overrides.items():
         data.setdefault(k, {}).update(v)

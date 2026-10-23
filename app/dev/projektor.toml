@@ -40,7 +40,7 @@ key = "../devdata/id_backup"
 remote_dir = ""
 
 [results]
-design_url = ""
+design_url = "https://vote.rufusreglet.ch/api/design"
 in_s = 1.3            # overlay fade + fade-in of one paragraph
 out_s = 0.8
 para_hold_s = 6.0     # paragraph fade-in start to its fade-out start

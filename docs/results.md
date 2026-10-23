@@ -104,7 +104,7 @@ Mode "stack" (manifest `paragraph_mode`): paragraphs are never faded out, paragr
 
 ## 2. Bridge (`projektor-bridge`, QLab Mac)
 
-New option `--results-url URL` (e.g. `https://example.org/welle/api/results`).
+New option `--results-url URL` (e.g. `https://vote.rufusreglet.ch/api/results`).
 OSC `/bridge/results` from QLab is **handled by the bridge, not forwarded**: GET the URL
 (timeout 3 s), then send `/proj/results/set <ja:int> <nein:int> <poll_id:int>` like any other
 command (LoRa with repeats, plus WiFi forward if configured). Reply to QLab:
@@ -127,7 +127,7 @@ a cue without a clip. The web UI cue editor can add/edit results cues and shows 
 (`ja`, `nein`, `poll_id`, received time) and the cached design version.
 ```toml
 [results]
-design_url = ""            # e.g. "https://example.org/welle/api/design"
+design_url = "https://vote.rufusreglet.ch/api/design"
 in_s = 1.3                 # overlay fade + fade-in of one paragraph (0.5 + 0.8 s nominal; scales both)
 out_s = 0.8                # total out-animation (scales text and overlay fade)
 para_hold_s = 6.0          # start of a paragraph's fade-in to the start of its fade-out (absolute, not scaled)

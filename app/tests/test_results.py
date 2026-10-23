@@ -616,4 +616,6 @@ def test_para_gap_alias(settings):
 
 
 def test_results_settings_defaults(settings):
+    from projektor.config import ResultsSettings
+    assert ResultsSettings().design_url == "https://vote.rufusreglet.ch/api/design"
     assert (settings.results.design_url, settings.results.in_s, settings.results.out_s) == ("", 1.3, 0.8)
