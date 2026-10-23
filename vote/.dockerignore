@@ -1,0 +1,10 @@
+node_modules
+.next
+data
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose.yml
+design-src
+README.md
