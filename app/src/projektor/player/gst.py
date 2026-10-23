@@ -1274,7 +1274,7 @@ class GstPlayer(Player):
             st = self.settings
             self.presenter = Presenter(self.results_design, st.display.width, st.display.height,
                                        st.display.fps, st.results.in_s, st.results.out_s,
-                                       st.results.para_gap_s)
+                                       st.results.para_hold_s)
             if self._display is not None and self._display.gl:
                 self.presenter.attach(_OverlaySink(self._display))
         return self.presenter

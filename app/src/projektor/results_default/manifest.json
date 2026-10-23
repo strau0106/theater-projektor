@@ -1,7 +1,8 @@
 {
-  "version": "278ebffb5101",
+  "version": "35438b49d399",
   "width": 1920,
   "height": 1080,
+  "paragraph_mode": "sequence",
   "template": "template.svg",
   "fonts": [
     {

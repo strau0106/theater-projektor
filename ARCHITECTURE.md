@@ -147,7 +147,7 @@ Process model inside `projektor run`:
   zorder above the video pad, display size, pre-multiplied BGRA at display fps). librsvg renders the
   design's layers once (static, one per text paragraph `para-N`, optional bar-ja/bar-nein) into cairo surfaces
   cropped to their ink rectangle; a worker thread composes only the animated region per frame (static,
-  paragraphs revealed one after the other with alpha, bars only for old bar templates) and pushes frames only while animating (the
+  paragraphs shown one at a time (sequence: fade in, hold `para_hold_s`, fade out, next; manifest `paragraph_mode` "stack" keeps them) with alpha, bars only for old bar templates) and pushes frames only while animating (the
   mixer keeps the last frame, like a held clip). The overlay is faded as a whole by the pad `alpha`
   with a GstController; because the source is pre-multiplied the pad blends with
   `blend-function-src-rgb=constant-alpha` and `blend-constant-color-alpha` is driven by the same
@@ -259,7 +259,7 @@ auto_delay_s = 10        # debounce; bursts coalesce; failures retry 30 s .. 15 
 design_url = ""          # e.g. "https://example.org/welle/api/design"
 in_s = 1.3               # overlay fade + fade-in of one paragraph (scales the 1.3 s of the contract)
 out_s = 0.8              # total out-animation
-para_gap_s = 2.5         # start of one paragraph to the start of the next (absolute)
+para_hold_s = 6.0        # start of a paragraph's fade-in to its fade-out (absolute; old name para_gap_s accepted)
 
 [notify]                 # Discord webhook notifications (docs/infmk1.md "Notifications")
 discord_webhook = ""     # empty = disabled

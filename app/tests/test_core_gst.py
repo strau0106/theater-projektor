@@ -304,7 +304,7 @@ def _results_player(gplayer, tmp_path):
 
     gplayer.settings.results.in_s = 0.26
     gplayer.settings.results.out_s = 0.16
-    gplayer.settings.results.para_gap_s = 0.5
+    gplayer.settings.results.para_hold_s = 0.5
     gplayer.results_design = DesignStore(tmp_path / "rdata")
     return gplayer
 

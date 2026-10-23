@@ -174,7 +174,17 @@ class ResultsSettings(_Section):
     design_url: str = ""       # design manifest URL for /proj/design/fetch
     in_s: float = Field(1.3, ge=0)    # overlay fade + fade-in of one paragraph
     out_s: float = Field(0.8, ge=0)   # total out-animation
-    para_gap_s: float = Field(2.5, ge=0)  # start of one paragraph to the start of the next
+    para_hold_s: float = Field(6.0, ge=0)  # start of a paragraph's fade-in to the start of its fade-out
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_para_gap(cls, data: Any) -> Any:
+        # deprecated name of para_hold_s
+        if isinstance(data, dict) and "para_gap_s" in data:
+            data = dict(data)
+            old = data.pop("para_gap_s")
+            data.setdefault("para_hold_s", old)
+        return data
 
 
 class Settings(_Section):

@@ -43,4 +43,4 @@ remote_dir = ""
 design_url = ""
 in_s = 1.3            # overlay fade + fade-in of one paragraph
 out_s = 0.8
-para_gap_s = 2.5      # start of one paragraph to the start of the next
+para_hold_s = 6.0     # paragraph fade-in start to its fade-out start

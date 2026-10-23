@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -216,7 +217,7 @@ def px(frame: bytes, x: int, y: int) -> tuple:
 
 @pytest.fixture
 def presenter(tmp_path):
-    p = Presenter(DesignStore(tmp_path), W, H, 30, in_s=0.26, out_s=0.16, para_gap_s=0.5)  # 5x faster
+    p = Presenter(DesignStore(tmp_path), W, H, 30, in_s=0.26, out_s=0.16, para_hold_s=0.5)  # 5x faster
     sink = FakeSink()
     p.attach(sink)
     yield p, sink
@@ -247,8 +248,8 @@ def test_renderer_layers_one_per_paragraph(tmp_path):
     assert r.static is not None and r.bar_ja is None and r.bar_nein is None
     lab = r.labels(41, 17)
     assert len(lab.layers) == 3 and all(ly is not None for ly in lab.layers)
-    ys = [ly.y for ly in lab.layers]
-    assert ys == sorted(ys) and len(set(ys)) == 3  # paragraphs stack downwards, centred block
+    for ly in lab.layers:  # each paragraph is centred vertically on its own (ink, +-descender/ascender slack)
+        assert abs(ly.y + ly.surface.get_height() / 2 - H / 2) < 0.02 * H
     assert r.labels(1, 2).layers[0] is not None
 
 
@@ -283,53 +284,120 @@ def _wait_tweens(p, name, timeout=3.0):
     assert name in p._tw
 
 
-def test_sequential_paragraph_reveal(tmp_path):
-    p = Presenter(DesignStore(tmp_path), W, H, 30)  # nominal timing: 0.5 s overlay, 0.8 s fades, 2.5 s gap
+def _vis(p, base, dt):
+    """Alpha of every paragraph dt seconds after the show started (new0..newN)."""
+    names = sorted(n for n in p._tw if n.startswith("new"))
+    return [p._tw[n].value(base + dt) for n in names]
+
+
+def test_sequence_one_paragraph_at_a_time(tmp_path):
+    p = Presenter(DesignStore(tmp_path), W, H, 30)  # nominal: 0.5 overlay, 0.8 in, hold 6.0, 0.6 out, 0.2 gap
     p.attach(FakeSink())
     try:
         p.show(41, 17)
         _wait_tweens(p, "new2")
         base = p._tw["alpha"].t0
-        v = lambda n, dt: p._tw[n].value(base + dt)  # noqa: E731
-        assert v("alpha", 0.5) == pytest.approx(1.0) and v("alpha", 0.25) == pytest.approx(0.5)
-        assert v("new0", 0.5) == 0.0 and v("new0", 0.9) == pytest.approx(0.5) and v("new0", 1.3) == pytest.approx(1.0)
-        assert v("new1", 2.9) == 0.0 and v("new1", 3.4) == pytest.approx(0.5) and v("new1", 3.8) == pytest.approx(1.0)
-        assert v("new2", 5.4) == 0.0 and v("new2", 5.9) == pytest.approx(0.5)
-        assert v("new2", 6.3) == pytest.approx(1.0) and p._tw["new2"].end == pytest.approx(base + 6.3)
-        assert v("new1", 1.3) == 0.0  # not yet revealed while paragraph 1 is complete
+        a = lambda dt: p._tw["alpha"].value(base + dt)  # noqa: E731
+        assert a(0.5) == pytest.approx(1.0) and a(0.25) == pytest.approx(0.5)
+        v = lambda dt: _vis(p, base, dt)  # noqa: E731
+        assert v(0.3) == [0, 0, 0]
+        assert v(0.9) == pytest.approx([0.5, 0, 0]) and v(1.5) == pytest.approx([1, 0, 0])
+        assert v(6.4) == pytest.approx([1, 0, 0])  # still holding (6.0 s from the fade-in start at 0.5)
+        assert v(6.8) == pytest.approx([0.5, 0, 0])  # fading out
+        assert v(7.1) == pytest.approx([0, 0, 0])  # black gap
+        assert v(7.25) == pytest.approx([0, 0, 0])  # next fade-in starts at 7.3
+        assert v(7.7) == pytest.approx([0, 0.5, 0]) and v(8.5) == pytest.approx([0, 1, 0])
+        assert v(14.5) == pytest.approx([0, 0, 0.5]) and v(15.5) == pytest.approx([0, 0, 1])
+        assert v(60) == pytest.approx([0, 0, 1])  # the last one stays
+        for dt in [x * 0.1 for x in range(0, 160)]:
+            assert sum(1 for x in v(dt) if x > 0.001) <= 1  # never two at once
+        assert p._tw["new2"].end == pytest.approx(base + 14.9)
     finally:
         p.close()
 
 
-def test_hide_mid_reveal_fades_current_state_out(tmp_path):
-    p = Presenter(DesignStore(tmp_path), W, H, 30, para_gap_s=0.6)
+def test_stack_mode_paragraphs_accumulate(tmp_path):
+    import dataclasses
+    store = DesignStore(tmp_path)
+    store._current = dataclasses.replace(store.load(), paragraph_mode="stack")
+    p = Presenter(store, W, H, 30)
+    p.attach(FakeSink())
+    try:
+        p.show(1, 2)
+        _wait_tweens(p, "new2")
+        base = p._tw["alpha"].t0
+        assert _vis(p, base, 1.5) == pytest.approx([1, 0, 0])
+        assert _vis(p, base, 8.0) == pytest.approx([1, 1, 0])
+        assert _vis(p, base, 30) == pytest.approx([1, 1, 1])
+    finally:
+        p.close()
+
+
+def test_manifest_paragraph_mode(tmp_path):
+    d = tmp_path / "b"
+    shutil.copytree(DEFAULT_DIR, d)
+    assert load_bundle(d, "cache").paragraph_mode == "sequence"
+    m = json.loads((d / "manifest.json").read_text())
+    m["paragraph_mode"] = "stack"
+    (d / "manifest.json").write_text(json.dumps(m))
+    assert load_bundle(d, "cache").paragraph_mode == "stack"
+    m["paragraph_mode"] = "bogus"
+    (d / "manifest.json").write_text(json.dumps(m))
+    assert load_bundle(d, "cache").paragraph_mode == "sequence"
+
+
+def test_hide_mid_sequence_fades_visible_paragraph_only(tmp_path):
+    p = Presenter(DesignStore(tmp_path), W, H, 30, para_hold_s=0.6)
     p.attach(FakeSink())
     try:
         p.show(3, 4)
         _wait_tweens(p, "new2")
-        time.sleep(1.5)  # overlay up, paragraph 1 visible, paragraph 2 part way
+        time.sleep(1.2)  # overlay up, paragraph 1 visible (holds until 1.1 s + fade-out)
         p.hide()
         end = time.monotonic() + 3
         while time.monotonic() < end and p._tw["alpha"].v1 != 0.0:
             time.sleep(0.01)
         t = p._tw["new0"].t0
-        assert p._tw["new0"].v1 == 0.0 and p._tw["new0"].v0 > 0.9  # starts from the current state
-        assert p._tw["new2"].v0 == 0.0 and p._tw["new2"].v1 == 0.0  # unrevealed stays hidden
-        assert p._tw["new0"].dur == pytest.approx(0.6)
+        vis = [p._tw[f"new{i}"] for i in range(3)]
+        assert all(tw.v1 == 0.0 for tw in vis)  # everything ends hidden; pending ones never appear
+        assert vis[2].v0 == 0.0 and vis[1].v0 == 0.0 and vis[2].dur == pytest.approx(0.6)
+        assert vis[0].v0 > 0.3  # starts from the current state
         assert p._tw["alpha"].t0 == pytest.approx(t + 0.4) and p._tw["alpha"].dur == pytest.approx(0.4)
     finally:
         p.close()
 
 
-def test_update_crossfades_visible_paragraphs(presenter):
+def test_live_update_crossfades_only_visible_paragraph(tmp_path):
+    p = Presenter(DesignStore(tmp_path), W, H, 30)
+    p.attach(FakeSink())
+    try:
+        p.show(3, 4)
+        _wait_tweens(p, "new2")
+        base = p._tw["alpha"].t0
+        sched = [tw for tw in p._sch]
+        time.sleep(1.8)  # paragraph 1 visible
+        p.show(5, 6)
+        end = time.monotonic() + 3
+        while time.monotonic() < end and not hasattr(p._tw["new0"], "a"):
+            time.sleep(0.005)
+        assert hasattr(p._tw["new0"], "a") and hasattr(p._tw["old0"], "a")  # crossfade with the schedule kept
+        assert not hasattr(p._tw["new1"], "a") and not hasattr(p._tw["new2"], "a")
+        assert p._sch[1].pts == sched[1].pts  # pending paragraphs keep their schedule
+        assert p._tw["new1"].value(base + 8.5) == pytest.approx(1.0)
+        assert p._tw["new0"].value(base + 8.5) == pytest.approx(0.0)  # para 1 is gone by then
+    finally:
+        p.close()
+
+
+def test_update_crossfades_last_paragraph_when_shown(presenter):
     p, sink = presenter
     p.show(10, 0)
     assert p.wait_idle(10)
     p.show(0, 10)
     end = time.monotonic() + 3
-    while time.monotonic() < end and p._tw["old0"].v0 != 1.0:
+    while time.monotonic() < end and not hasattr(p._tw["old2"], "a"):
         time.sleep(0.005)
-    assert p._tw["old0"].v1 == 0.0 and p._tw["new0"].v1 == 1.0 and p._tw["new0"].v0 == 0.0
+    assert hasattr(p._tw["old2"], "a") and hasattr(p._tw["new2"], "a")
     assert p.wait_idle(10) and sink.released == 0
 
 
@@ -341,17 +409,14 @@ def test_animation_frames_show_text_progressively(presenter):
     assert sink.ramps[0][-1][1] == 1.0  # alpha ramp towards 1
     first, last = sink.frames[0], sink.frames[-1]
     assert len(set(sink.frames)) > 3 and last != first
-    r = p._renderer
-    lab = r.labels(41, 17)
 
-    def lit(frame, i):  # any bright pixel in the rows of paragraph i
-        ly = lab.layers[i]
-        return any(c > 128 for c in frame[ly.y * W * 4 + 1:(ly.y + ly.surface.get_height()) * W * 4:4])
+    def lit(frame):
+        return any(c > 128 for c in frame[1::4])
 
-    assert not any(lit(first, i) for i in range(3))  # first frame: black, no text yet
-    assert all(lit(last, i) for i in range(3))  # last frame: all paragraphs
-    # paragraph 1 shows up while paragraph 3 is still missing
-    assert any(lit(f, 0) and not lit(f, 2) for f in sink.frames)
+    assert not lit(first)  # first frame: black, no text yet
+    assert lit(last)  # last paragraph stays
+    # the paragraph before disappears completely at some point before the next one shows up
+    assert any(not lit(f) for f in sink.frames[1:-1])
 
 
 def test_hide_animates_out_and_releases(presenter):
@@ -372,10 +437,10 @@ def test_update_while_shown_animates_to_new_values(presenter):
     p, sink = presenter
     p.show(10, 0)
     assert p.wait_idle(10)
-    a = sink.frames[-1]
+    n0 = len(sink.frames)
     p.show(0, 10)
     assert p.wait_idle(10)
-    assert sink.frames[-1] != a and sink.released == 0 and p.visible
+    assert len(sink.frames) > n0 + 2 and sink.released == 0 and p.visible
 
 
 def test_clear_is_immediate(presenter):
@@ -398,7 +463,7 @@ def test_zero_votes_render_zero_percent(presenter):
 
 
 def test_compose_cost_1080p(tmp_path):
-    p = Presenter(DesignStore(tmp_path), 1920, 1080, 30, in_s=0.26, out_s=0.16, para_gap_s=0.5)
+    p = Presenter(DesignStore(tmp_path), 1920, 1080, 30, in_s=0.26, out_s=0.16, para_hold_s=0.5)
     sink = FakeSink()
     p.attach(sink)
     p.show(41, 17)
@@ -541,6 +606,13 @@ def test_design_fetch_uses_configured_url(tmp_path, site):
     out = []
     d.handle("/proj/design/fetch", [], "osc", reply=lambda a, r: (out.append(a), done.set()))
     assert done.wait(10) and out == ["/proj/design/ok"]
+
+
+def test_para_gap_alias(settings):
+    from projektor.config import ResultsSettings
+    assert ResultsSettings().para_hold_s == 6.0
+    assert ResultsSettings(para_gap_s=3.0).para_hold_s == 3.0
+    assert ResultsSettings(para_gap_s=3.0, para_hold_s=4.0).para_hold_s == 4.0
 
 
 def test_results_settings_defaults(settings):

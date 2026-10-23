@@ -54,11 +54,12 @@ Admin endpoints (`/api/admin/...`) require the admin session cookie.
 
 ```json
 {"version": "a1b2c3d4e5f6", "width": 1920, "height": 1080,
- "template": "design/template.svg",
+ "paragraph_mode": "sequence", "template": "design/template.svg",
  "fonts": [{"family": "Arimo", "file": "Arimo-Bold.ttf", "url": "design/fonts/Arimo-Bold.ttf"}]}
 ```
 
-`version` = short content hash of template + fonts (Pi skips download when unchanged).
+`paragraph_mode` (optional, `"sequence"` default | `"stack"`, see animation) is a per-design override.
+`version` = short content hash of template + fonts + mode (Pi skips download when unchanged).
 `npm run export-design -- <dir>` writes the same bundle to disk (`manifest.json`,
 `template.svg`, `fonts/…`) — used to refresh the Pi's bundled default design.
 
@@ -74,8 +75,9 @@ Admin endpoints (`/api/admin/...`) require the admin session cookie.
     `{pct_ja}` `{pct_nein}` (integer percent, rounded so both sum to 100 when total > 0)
     `{count_ja}` `{count_nein}` `{total}`; substituted as plain strings before rendering. Its
     children may be paragraph groups `<g id="para-1">`, `<g id="para-2">`, ... (any number >= 1,
-    ordered by N). Each paragraph is rendered as its own layer and revealed after the previous one
-    (see animation). A labels layer without `para-N` children is a single paragraph (old bundles).
+    ordered by N). Each paragraph is rendered as its own layer and shown after the previous one
+    (see animation); in the default sequence mode paragraphs are shown alone, so each group is
+    centred on the canvas by itself and they overlap in position. A labels layer without `para-N` children is a single paragraph (old bundles).
   - `<g id="layer-bars">` (optional, old bar-graph designs) containing `<rect id="bar-ja">` and
     `<rect id="bar-nein">`, each drawn at **100 %** size. The visible bar = the bottom `pct %` of
     that rect (bars grow upwards; bottom edge `y + height` is the baseline). Without it the Pi
@@ -84,17 +86,21 @@ Admin endpoints (`/api/admin/...`) require the admin session cookie.
 - Percent with total = 0: both 0.
 
 The current design ("Keynote text slide"): black background, white Arimo Bold (metric-compatible with
-Helvetica/Arial, stands in for Keynote's Helvetica Neue Bold) 55 px, centred, three paragraphs
-`para-1..3`. In the slide text `x` = Nein votes (`{count_nein}`), `y` = Ja votes (`{count_ja}`); this
+Helvetica/Arial, stands in for Keynote's Helvetica Neue Bold) 55 px, centred (horizontally and, per paragraph, vertically), three
+paragraphs `para-1..3` that are shown one at a time. In the slide text `x` = Nein votes (`{count_nein}`), `y` = Ja votes (`{count_ja}`); this
 mapping is the `SLIDE_COUNT` constant in `vote/src/design/tokens.ts`.
 
-Animation (same timing on website and Pi, Pi values configurable): in = black overlay fades in
-0.5 s, then paragraph 1 fades in over 0.8 s; each next paragraph starts `para_gap_s` (2.5 s) after the
-previous one *started*, so three paragraphs take 0.5 + 2 x 2.5 + 0.8 = 6.3 s. Out = all text fades out
-together over 0.6 s, the overlay fades 0.4 s overlapping the end (starts at 0.4 s; total 0.8 s). A
-GO / next cue / fadeout mid-reveal animates out from the current state (unrevealed paragraphs stay
-hidden). If the results are set again while shown, the visible paragraphs crossfade to the new text
-(0.5 s); paragraphs not yet revealed keep their schedule.
+Animation (same timing on website and Pi, Pi values configurable), default `paragraph_mode` "sequence"
+(like separate slides): in = black overlay fades in 0.5 s, then paragraph 1 fades in over 0.8 s and
+holds. `para_hold_s` (default 6.0 s, counted from the *start* of the paragraph's fade-in) later it fades
+out (0.6 s); after 0.2 s of black the next paragraph fades in (0.8 s), and so on. The last paragraph
+stays until hide. So paragraph N (from 1) starts at 0.5 + (N-1) x 6.8 s: 0.5 / 7.3 / 14.1 s. Out
+(next cue / GO / fadeout, also mid-sequence) = the visible paragraph fades out over 0.6 s, the overlay
+fades 0.4 s overlapping the end (starts at 0.4 s; total 0.8 s); paragraphs not yet shown never appear.
+If the results are set again while shown, only the visible paragraph crossfades to the new text (0.5 s);
+the sequence timing goes on. A labels layer without `para-N` children is one paragraph: fade in and stay.
+Mode "stack" (manifest `paragraph_mode`): paragraphs are never faded out, paragraph N+1 fades in
+`para_hold_s` after N started and stays (the old behaviour, there with a 2.5 s gap).
 
 ## 2. Bridge (`projektor-bridge`, QLab Mac)
 
@@ -124,5 +130,6 @@ a cue without a clip. The web UI cue editor can add/edit results cues and shows 
 design_url = ""            # e.g. "https://example.org/welle/api/design"
 in_s = 1.3                 # overlay fade + fade-in of one paragraph (0.5 + 0.8 s nominal; scales both)
 out_s = 0.8                # total out-animation (scales text and overlay fade)
-para_gap_s = 2.5           # start of one paragraph to the start of the next (absolute, not scaled)
+para_hold_s = 6.0          # start of a paragraph's fade-in to the start of its fade-out (absolute, not scaled)
+                           # (old name para_gap_s is still accepted)
 ```

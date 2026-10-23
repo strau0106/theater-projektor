@@ -1,5 +1,5 @@
 import { type Counts, fillTokens, tokenValues } from "./percent";
-import { TIMING as T } from "./tokens";
+import { PARAGRAPH_MODE, TIMING as T } from "./tokens";
 
 const seg = (t: number, start: number, dur: number) => Math.min(1, Math.max(0, (t - start) / dur));
 
@@ -14,6 +14,8 @@ export class ResultsPlayer {
   private counts: Counts | null = null;
   private state: State = "hidden";
   private raf = 0;
+  private t0 = 0;
+  private xf: { start: number; c: Counts; swapped: boolean } | null = null;
 
   constructor(private svg: SVGSVGElement) {
     const layer = svg.querySelector("#layer-labels")!;
@@ -54,23 +56,55 @@ export class ResultsPlayer {
     this.raf = requestAnimationFrame(tick);
   }
 
+  /** Opacity of paragraph i at t seconds after show() (overlay fade included in the offset). */
+  private sched(i: number, t: number): number {
+    const n = this.paras.length;
+    if (PARAGRAPH_MODE === "stack") return seg(t, T.inOverlay + i * T.paraHold, T.inPara);
+    const s = T.inOverlay + i * (T.paraHold + T.outText + T.paraGap);
+    const up = seg(t, s, T.inPara);
+    return i === n - 1 ? up : up * (1 - seg(t, s + T.paraHold, T.outText));
+  }
+
+  private seqEnd(): number {
+    const n = this.paras.length;
+    const gap = PARAGRAPH_MODE === "stack" ? T.paraHold : T.paraHold + T.outText + T.paraGap;
+    return T.inOverlay + (n - 1) * gap + T.inPara;
+  }
+
   show(c: Counts) {
     this.set(c);
     this.state = "in";
-    this.play(
-      T.inOverlay + (this.paras.length - 1) * T.paraGap + T.inPara,
-      (t) => {
-        this.overlay = seg(t, 0, T.inOverlay);
-        this.ops = this.paras.map((_, i) => seg(t, T.inOverlay + i * T.paraGap, T.inPara));
-      },
-      () => (this.state = "shown"),
-    );
+    this.xf = null;
+    this.t0 = performance.now();
+    this.run();
   }
 
-  /** Out from whatever is visible now (also mid-reveal): all text together, overlay overlapping the end. */
+  /** Timeline loop: overlay + paragraph schedule (+ live-update crossfade) until the sequence is over. */
+  private run() {
+    cancelAnimationFrame(this.raf);
+    const tick = (now: number) => {
+      const t = (now - this.t0) / 1000;
+      this.overlay = seg(t, 0, T.inOverlay);
+      let k = 1;
+      if (this.xf) {
+        const u = (now - this.xf.start) / 1000;
+        if (u >= T.update / 2 && !this.xf.swapped) (this.xf.swapped = true), this.set(this.xf.c);
+        k = u < T.update / 2 ? 1 - seg(u, 0, T.update / 2) : seg(u, T.update / 2, T.update / 2);
+        if (u >= T.update) this.xf = null;
+      }
+      this.ops = this.paras.map((_, i) => this.sched(i, t) * k);
+      this.draw();
+      if (t >= this.seqEnd() && !this.xf) this.state = "shown";
+      else this.raf = requestAnimationFrame(tick);
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+
+  /** Out from whatever is visible now (also mid-sequence): visible text and overlay fade out; pending text never appears. */
   hide() {
     if (this.state === "hidden") return;
     this.state = "out";
+    this.xf = null;
     const o0 = this.overlay;
     const p0 = [...this.ops];
     const end = Math.max(T.outText, T.outOverlayAt + T.outOverlay);
@@ -84,21 +118,13 @@ export class ResultsPlayer {
     );
   }
 
-  /** New counts: the text crossfades (old out, new in) when shown, else switches at once. */
+  /** New counts: the visible paragraph crossfades (old out, new in) while shown, the sequence goes on; else switches at once. */
   update(c: Counts) {
     if (this.counts && c.ja === this.counts.ja && c.nein === this.counts.nein) return;
-    if (this.state !== "shown") return this.set(c);
-    const half = T.update / 2;
-    let swapped = false;
-    this.play(
-      T.update,
-      (t) => {
-        if (t >= half && !swapped) (swapped = true), this.set(c);
-        const k = t < half ? 1 - seg(t, 0, half) : seg(t, half, half);
-        this.ops = this.paras.map(() => k);
-      },
-      () => {},
-    );
+    if (this.state !== "shown" && this.state !== "in") return this.set(c);
+    this.xf = { start: performance.now(), c, swapped: false };
+    this.counts = c;
+    this.run();
   }
 
   destroy() {

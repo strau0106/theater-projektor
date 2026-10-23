@@ -15,13 +15,16 @@ export const FONTS = [{ family: "Arimo", file: "Arimo-Bold.ttf" }] as const;
 
 export const WIDTH = 1920;
 export const HEIGHT = 1080;
+// "sequence": paragraphs are shown one at a time; "stack": each one stays and the next appears below/over it
+export const PARAGRAPH_MODE: "sequence" | "stack" = "sequence";
 export const QUESTION = "Bist du für die Welle?";
 
 // seconds; the same numbers are used by the projector (docs/results.md)
 export const TIMING = {
   inOverlay: 0.5,
   inPara: 0.8, // fade-in of one paragraph
-  paraGap: 2.5, // start of one paragraph to the start of the next (Pi: [results] para_gap_s)
+  paraHold: 6.0, // start of a paragraph's fade-in to the start of its fade-out (Pi: [results] para_hold_s)
+  paraGap: 0.2, // black between one paragraph's fade-out and the next one's fade-in
   outText: 0.6,
   outOverlayAt: 0.4,
   outOverlay: 0.4,
@@ -33,7 +36,7 @@ export const TIMING = {
 export const SLIDE_COUNT = { x: "count_nein", y: "count_ja" } as const;
 
 // Keynote text slide (reference: 16:9, black, white bold; size/line pitch measured on the thumbnail).
-// Lines are centred horizontally, the block is centred vertically (template.ts).
+// Lines are centred horizontally; each paragraph is centred vertically on its own (template.ts).
 export const SLIDE = {
   size: 55,
   lineHeight: 67.5,

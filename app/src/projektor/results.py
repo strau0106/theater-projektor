@@ -18,16 +18,20 @@ baseline, labels with alpha. Only the region the animation touches is redrawn. F
 pre-multiplied BGRA (cairo's native ARGB32).
 
 Animation (overlay/paragraph fade times scaled by `[results] in_s / out_s` relative to the
-1.3 s / 0.8 s of the contract; `para_gap_s` is absolute; every component is an independent
+1.3 s / 0.8 s of the contract; `para_hold_s` is absolute; every component is an independent
 tween, so a new command mid-animation continues from the current values). The text is a list
-of paragraphs (`<g id="para-N">` in `#layer-labels`; none = the whole layer is one paragraph):
+of paragraphs (`<g id="para-N">` in `#layer-labels`; none = the whole layer is one paragraph).
+Default design mode "sequence" (manifest `paragraph_mode`): one paragraph at a time.
 
     in   overlay alpha 0 -> 1        0.00 .. 0.50 s
-         paragraph N alpha 0 -> 1    0.50 + (N-1)*para_gap_s, 0.80 s long (gap = start to start)
+         paragraph 1 alpha 0 -> 1    0.50 .. 1.30 s
+         paragraph N stays para_hold_s (6 s, from the start of its fade-in), fades out 0.6 s,
+         0.2 s black, paragraph N+1 fades in 0.8 s; the last paragraph stays until hide
+         (mode "stack": paragraphs are not faded out, N+1 starts para_hold_s after N)
          bars (only if the template has them) 0 -> pct, ease-out, with the first paragraph
-    out  all text alpha -> 0         0.00 .. 0.60 s   (bars shrink in the same time)
-         overlay alpha -> 0                  0.40 .. 0.80 s
-    live update (set again while shown): visible paragraphs crossfade, 0.5 s
+    out  visible text alpha -> 0     0.00 .. 0.60 s   (bars shrink in the same time)
+         overlay alpha -> 0                  0.40 .. 0.80 s   (pending paragraphs never appear)
+    live update (set again while shown): the visible paragraph crossfades, 0.5 s; the schedule goes on
 
 Threading: one worker thread ("results") does all librsvg/pango work (pango's default font
 map is per thread) and pushes the frames; callers (GLib main loop, tests) only enqueue.
@@ -67,7 +71,9 @@ MAX_ASSET = 24 << 20
 
 # nominal animation times (s) at in_s = 1.3 (overlay + one paragraph) / out_s = 0.8
 IN_NOMINAL, OUT_NOMINAL = 1.3, 0.8
-PARA_GAP_DEFAULT = 2.5  # start of one paragraph to the start of the next
+PARA_HOLD_DEFAULT = 6.0  # start of a paragraph's fade-in to the start of its fade-out
+T_PARA_GAP = 0.2  # black between one paragraph's fade-out and the next one's fade-in (sequence mode)
+PARAGRAPH_MODES = ("sequence", "stack")
 T_ALPHA_IN = 0.5
 T_BAR_START, T_BAR_LEN, T_NEIN_DELAY = 0.5, 1.0, 0.0  # bars: only templates that still have them
 T_LABELS_IN = 0.8  # fade-in of one paragraph
@@ -122,6 +128,49 @@ class Tween:
     @property
     def end(self) -> float:
         return self.t0 + self.dur
+
+
+@dataclass
+class Keys:
+    """Piecewise linear value over (time, value) points; constant outside the first/last point."""
+
+    pts: list[tuple[float, float]]
+
+    def value(self, t: float) -> float:
+        p = self.pts
+        if t <= p[0][0]:
+            return p[0][1]
+        for (ta, va), (tb, vb) in zip(p, p[1:]):
+            if t < tb:
+                return va + (vb - va) * ((t - ta) / (tb - ta) if tb > ta else 1.0)
+        return p[-1][1]
+
+    @property
+    def t0(self) -> float:
+        return self.pts[0][0]
+
+    @property
+    def end(self) -> float:
+        return self.pts[-1][0]
+
+
+@dataclass
+class Product:
+    """a(t) * b(t): a paragraph's schedule times a live-update crossfade."""
+
+    a: Any
+    b: Any
+
+    def value(self, t: float) -> float:
+        return self.a.value(t) * self.b.value(t)
+
+    @property
+    def t0(self) -> float:
+        return min(self.a.t0, self.b.t0)
+
+    @property
+    def end(self) -> float:
+        return max(self.a.end, self.b.end)
 
 
 # --------------------------------------------------------------------------- stored results
@@ -183,6 +232,7 @@ class Design:
     fonts: list[Path] = field(default_factory=list)
     source: str = "default"  # default | cache
     directory: Path | None = None
+    paragraph_mode: str = "sequence"  # sequence: one paragraph at a time | stack: they accumulate
 
 
 def validate_template(svg: bytes) -> None:
@@ -230,12 +280,16 @@ def load_bundle(directory: Path, source: str) -> Design:
         version = str(man["version"])
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise ProjektorError(f"design bundle {directory}: {e}") from e
+    mode = str(man.get("paragraph_mode") or "sequence")
+    if mode not in PARAGRAPH_MODES:
+        mode = "sequence"
     validate_template(svg)
     for f in fonts:
         if not f.is_file():
             raise ProjektorError(f"design bundle {directory}: font file {f.name} missing")
     return Design(version=version, template=svg, width=int(man.get("width", 1920)),
-                  height=int(man.get("height", 1080)), fonts=fonts, source=source, directory=directory)
+                  height=int(man.get("height", 1080)), fonts=fonts, source=source, directory=directory,
+                  paragraph_mode=mode)
 
 
 def _http_get(url: str, limit: int, timeout: float = 15.0) -> bytes:
@@ -325,6 +379,7 @@ class DesignStore:
             version = str(man["version"])
             template = str(man["template"])
             fonts = [(str(f["file"]), str(f["url"])) for f in man.get("fonts", [])]
+            mode = str(man.get("paragraph_mode") or "sequence")
         except (ValueError, KeyError, TypeError) as e:
             raise ProjektorError(f"bad design manifest: {e}") from e
         if self.root.is_dir():
@@ -351,6 +406,7 @@ class DesignStore:
                 (tmp / "fonts" / name).write_bytes(data)
             manifest = {"version": version, "width": int(man.get("width", 1920)),
                         "height": int(man.get("height", 1080)), "template_file": "template.svg",
+                        "paragraph_mode": mode if mode in PARAGRAPH_MODES else "sequence",
                         "fonts": [{"family": f.get("family", ""), "file": n}
                                   for f, (n, _d) in zip(man.get("fonts", []), blobs)]}
             (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -626,12 +682,12 @@ class OverlaySink(Protocol):
 class Presenter:
     def __init__(self, store: DesignStore, width: int, height: int, fps: int,
                  in_s: float = IN_NOMINAL, out_s: float = OUT_NOMINAL,
-                 para_gap_s: float = PARA_GAP_DEFAULT):
+                 para_hold_s: float = PARA_HOLD_DEFAULT):
         self.store = store
         self.w, self.h, self.fps = width, height, max(1, int(fps))
         self.in_k = in_s / IN_NOMINAL
         self.out_k = out_s / OUT_NOMINAL
-        self.para_gap = max(0.0, para_gap_s)
+        self.para_hold = max(0.0, para_hold_s)
         self.sink: OverlaySink | None = None
         self._jobs: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -642,7 +698,8 @@ class Presenter:
         # worker-thread state
         self._renderer: DesignRenderer | None = None
         self._design_gen = 0
-        self._tw: dict[str, Tween] = {}
+        self._tw: dict[str, Any] = {}
+        self._sch: list[Keys] = []  # per-paragraph visibility schedule (without live-update crossfades)
         self._frame: Any = None  # persistent cairo surface
         self._labels_new: Labels | None = None
         self._labels_old: Labels | None = None
@@ -772,6 +829,29 @@ class Presenter:
     def _now_s(self) -> float:
         return self.sink.now_ns() / 1e9
 
+    def _mode(self) -> str:
+        return self._renderer.design.paragraph_mode if self._renderer is not None else "sequence"
+
+    def _sched(self, n: int, t: float) -> list[Keys]:
+        """Opacity schedule of every paragraph for a show that starts at t (overlay fade first)."""
+        k, ko = self.in_k, self.out_k
+        fin, fout = T_LABELS_IN * k, T_LABELS_OUT * ko
+        s0 = t + T_ALPHA_IN * k
+        out = []
+        for i in range(n):
+            if self._mode() == "stack":
+                s = s0 + i * self.para_hold
+                out.append(Keys([(s, 0.0), (s + fin, 1.0)]))
+                continue
+            s = s0 + i * (self.para_hold + fout + T_PARA_GAP)
+            pts = [(s, 0.0), (s + fin, 1.0)]
+            if i < n - 1:  # the last one stays until hide
+                pts += [(s + self.para_hold, 1.0), (s + self.para_hold + fout, 0.0)]
+                if self.para_hold < fin:  # fade-out may not start before the fade-in is over
+                    pts = [(s, 0.0), (s + fin, 1.0), (s + fin + fout, 0.0)]
+            out.append(Keys(pts))
+        return out
+
     def _do_show(self, ja: int, nein: int) -> None:
         sink = self.sink
         if sink is None:
@@ -780,6 +860,7 @@ class Presenter:
 
         r = self._ensure_renderer()
         labels = r.labels(ja, nein)
+        n = len(labels.layers)
         t = self._now_s() + 0.04  # let the first frame reach the mixer before the ramp starts
         k = self.in_k
         pa, pn = (p / 100.0 for p in percentages(ja, nein))
@@ -789,8 +870,9 @@ class Presenter:
                 "ja": Tween(0.0, pa, t + T_BAR_START * k, T_BAR_LEN * k, ease_out),
                 "nein": Tween(0.0, pn, t + (T_BAR_START + T_NEIN_DELAY) * k, T_BAR_LEN * k, ease_out),
             }
-            for i in range(len(labels.layers)):
-                self._tw[f"new{i}"] = Tween(0.0, 1.0, t + T_ALPHA_IN * k + i * self.para_gap, T_LABELS_IN * k)
+            self._sch = self._sched(n, t)
+            for i in range(n):
+                self._tw[f"new{i}"] = self._sch[i]
                 self._tw[f"old{i}"] = Tween(0.0, 0.0)
             self._labels_old, self._labels_new = None, labels
             self._frame = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.w, self.h)
@@ -804,27 +886,33 @@ class Presenter:
             if self._frame is None:
                 self._frame = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.w, self.h)
                 self._draw_static()
+            xf = T_LABELS_XFADE * k
+            restart = self._phase == "out"  # shown again while fading out: the sequence starts over
+            t_seq = t + T_ALPHA_IN * k * (1.0 - cur["alpha"]) - T_ALPHA_IN * k if restart else t
             self._tw["alpha"] = Tween(cur["alpha"], 1.0, t, T_ALPHA_IN * k * (1.0 - cur["alpha"]))
-            self._tw["ja"] = Tween(cur["ja"], pa, t, T_LABELS_XFADE * k, ease_out)
-            self._tw["nein"] = Tween(cur["nein"], pn, t, T_LABELS_XFADE * k, ease_out)
-            if not same or self._phase == "out":
-                old = self._labels_new
-                self._labels_old = old
+            self._tw["ja"] = Tween(cur["ja"], pa, t, xf, ease_out)
+            self._tw["nein"] = Tween(cur["nein"], pn, t, xf, ease_out)
+            if restart:
+                self._sch = self._sched(n, t_seq)
+            if not same or restart:
+                self._labels_old = self._labels_new
                 self._labels_new = labels
-                j = 0  # paragraphs not revealed yet start one after the other from now
-                for i in range(len(labels.layers)):
-                    tn = self._tw.get(f"new{i}")
-                    vis = tn.value(t) if tn is not None else 0.0
-                    if vis > 0.001:  # visible: crossfade old text -> new text
-                        self._tw[f"old{i}"] = Tween(vis, 0.0, t, T_LABELS_XFADE * k)
-                        self._tw[f"new{i}"] = Tween(0.0, 1.0, t, T_LABELS_XFADE * k)
+                for i in range(n):
+                    base = self._sch[i] if i < len(self._sch) else Keys([(t, 0.0), (t, 0.0)])
+                    vis = cur.get(f"new{i}", 0.0) if restart else base.value(t)
+                    if vis > 0.001:  # visible: crossfade old text -> new text, the schedule goes on
+                        if restart:
+                            self._tw[f"old{i}"] = Tween(vis, 0.0, t, xf)
+                            self._tw[f"new{i}"] = Product(base, Tween(0.0, 1.0, t, xf))
+                        else:
+                            self._tw[f"old{i}"] = Product(base, Tween(1.0, 0.0, t, xf))
+                            self._tw[f"new{i}"] = Product(base, Tween(0.0, 1.0, t, xf))
                     else:
                         self._tw[f"old{i}"] = Tween(0.0, 0.0)
-                        if tn is None or tn.t0 <= t:  # never scheduled / already finished hiding
-                            self._tw[f"new{i}"] = Tween(0.0, 1.0, t + j * self.para_gap, T_LABELS_IN * k)
-                            j += 1
-                for n in [n for n in self._tw if n[:3] in ("new", "old") and int(n[3:]) >= len(labels.layers)]:
-                    del self._tw[n]  # fewer paragraphs than before
+                        self._tw[f"new{i}"] = base
+                for nm in [nm for nm in self._tw if nm[:3] in ("new", "old") and int(nm[3:]) >= n]:
+                    del self._tw[nm]  # fewer paragraphs than before
+                del self._sch[n:]
             sink.ramp_alpha(self._alpha_points())
         self._phase = "in"
         self._next_frame = time.monotonic()
